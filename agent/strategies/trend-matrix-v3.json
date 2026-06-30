@@ -1,0 +1,95 @@
+{
+  "id": "trend-matrix-v3",
+  "name": "趋势策略矩阵",
+  "version": "v3",
+  "description": "三层筛选 + 四策略自动路由",
+  "scan_time": "14:30",
+  "layers": {
+    "trend_quality": {
+      "thresholds": {"strong": 65, "weak": 50},
+      "factors": [
+        {"name": "annual_return", "weight": 0.35},
+        {"name": "ma200_deviation", "weight": 0.25},
+        {"name": "max_drawdown", "weight": 0.20},
+        {"name": "trend_slope_60d", "weight": 0.10},
+        {"name": "volatility_penalty", "weight": 0.10}
+      ]
+    },
+    "strategy_fit": {
+      "threshold": 55,
+      "factors": [
+        {"name": "bull_bear_clarity", "weight": 0.50},
+        {"name": "drawdown_gap", "weight": 0.30},
+        {"name": "trend_noise_ratio", "weight": 0.20}
+      ]
+    },
+    "entry_timing": {
+      "factors": [
+        {"name": "ma200_position", "weight": 0.35},
+        {"name": "current_drawdown", "weight": 0.30},
+        {"name": "recent_volatility", "weight": 0.20},
+        {"name": "last_signal_days", "weight": 0.15}
+      ]
+    }
+  },
+  "sub_strategies": [
+    {
+      "name": "BearFlat+DD20",
+      "label": "慢牛蓝筹型",
+      "entry": "price > MA200 AND drawdown_200d > 0.20",
+      "exit": "price < MA200",
+      "min_hold_days": 10,
+      "cooldown_days": 20,
+      "position_weight": 1.0
+    },
+    {
+      "name": "Pure MA200",
+      "label": "强趋势型",
+      "entry": "price crosses above MA200",
+      "exit": "price < MA200",
+      "min_hold_days": 3,
+      "cooldown_days": 5,
+      "position_weight": 1.0
+    },
+    {
+      "name": "MA200+VolGate",
+      "label": "高波动趋势型",
+      "entry": "price > MA200 AND volatility_20d < 0.03",
+      "exit": "price < MA200 OR volatility_20d > 0.05",
+      "min_hold_days": 3,
+      "cooldown_days": 5,
+      "position_weight": 1.0
+    },
+    {
+      "name": "MA200+Confirm3",
+      "label": "宽基指数型",
+      "entry": "price > MA200 for >= 3 consecutive days",
+      "exit": "price < MA200",
+      "min_hold_days": 5,
+      "cooldown_days": 10,
+      "position_weight": 1.0
+    }
+  ],
+  "risk": {
+    "position_cap": 0.25,
+    "surge_stop_5d": 0.15
+  },
+  "display": {
+    "pool_groups": [
+      {"strategy": "BearFlat+DD20", "label": "慢牛蓝筹", "color": "#4a90d9"},
+      {"strategy": "Pure MA200", "label": "强趋势", "color": "#00c875"},
+      {"strategy": "MA200+VolGate", "label": "高波动", "color": "#ffa502"},
+      {"strategy": "MA200+Confirm3", "label": "宽基指数", "color": "#a29bfe"}
+    ],
+    "notification_templates": {
+      "buy_BearFlat+DD20": "{name} 回撤{dd}%，触发DD20黄金坑买点",
+      "sell_BearFlat+DD20": "{name} 跌破MA200，触发出场",
+      "buy_Pure MA200": "{name} 上穿MA200，强趋势入场信号",
+      "sell_Pure MA200": "{name} 跌破MA200，趋势转弱",
+      "buy_MA200+VolGate": "{name} 波动率{vol}%+站上MA200，静默入场",
+      "sell_MA200+VolGate": "{name} 波动率飙至{vol}%，触发出场",
+      "buy_MA200+Confirm3": "{name} 连续{confirm_days}日站稳MA200，确认突破",
+      "sell_MA200+Confirm3": "{name} 跌破MA200，趋势结束"
+    }
+  }
+}
