@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.factors.bench_runner import _compute_single_alpha, _init_bench_worker
 
@@ -82,6 +84,10 @@ class TestParallelBench:
         monkeypatch.setattr("src.factors.bench_runner.get_default_registry", lambda: mock_reg)
         return mock_reg
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows spawn does not inherit the monkeypatched registry used by this mock test",
+    )
     def test_parallel_matches_sequential(self, monkeypatch):
         from src.factors.bench_runner import run_bench
 
