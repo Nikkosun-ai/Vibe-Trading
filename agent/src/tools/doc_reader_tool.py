@@ -45,6 +45,25 @@ _TEXT_EXTS = {
 }
 
 _ocr_engine = None
+_ocr_checked = False
+
+_OCR_INSTALL_MSG = (
+    "OCR engine not available. This document contains scanned/image-based pages "
+    "that require OCR to extract text. "
+    "Install the OCR dependency: pip install rapidocr_onnxruntime"
+)
+
+
+def _ocr_available() -> bool:
+    """Check if RapidOCR is importable (cached after first call)."""
+    global _ocr_checked
+    if not _ocr_checked:
+        try:
+            import rapidocr_onnxruntime  # noqa: F401  # type: ignore
+            _ocr_checked = True
+        except ImportError:
+            _ocr_checked = False
+    return _ocr_checked
 
 
 # ---------------- shared helpers ----------------
@@ -86,11 +105,11 @@ def _get_ocr():
 
 
 def _ocr_image_array(img) -> str:
-    """Run OCR on a numpy image; return joined lines or empty string."""
-    try:
-        ocr = _get_ocr()
-    except ImportError:
-        return ""
+    """Run OCR on a numpy image; return joined lines or empty string.
+
+    Raises ImportError if RapidOCR is not installed.
+    """
+    ocr = _get_ocr()
     result, _ = ocr(img)
     if not result:
         return ""
@@ -144,7 +163,13 @@ def _read_pdf(path: Path, pages: str) -> str:
                     message=f"page {i + 1}/{total_pages}",
                 )
                 continue
-            # OCR fallback for image pages
+            # Scanned/image page detected — OCR required
+            if not _ocr_available():
+                return _err(
+                    f"Page {i + 1}/{total_pages} is a scanned/image page with no "
+                    f"extractable text, but the OCR engine is not installed. "
+                    f"{_OCR_INSTALL_MSG}"
+                )
             bitmap = page.render(scale=300 / 72)
             img = bitmap.to_numpy()
             ocr_text = _ocr_image_array(img)
@@ -249,9 +274,12 @@ def _read_image(path: Path) -> str:
     except Exception as exc:
         return _err(f"Failed to open image: {exc}")
 
+    if not _ocr_available():
+        return _err(_OCR_INSTALL_MSG)
+
     text = _ocr_image_array(img)
     if not text.strip():
-        return _envelope(path, "image", "", note="OCR returned no text (engine missing or empty image)")
+        return _envelope(path, "image", "", note="OCR returned no text (empty or unreadable image)")
     return _envelope(path, "image", text)
 
 
