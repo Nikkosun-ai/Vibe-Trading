@@ -25,7 +25,7 @@ def _env_int(name: str, default: int) -> int:
     Returns:
         Parsed positive integer, or ``default`` when unset/invalid.
     """
-    raw = os.getenv(name)
+    raw = os.getenv(name)  # noqa: env-gate — generic env override reader
     if raw is None:
         return default
     try:

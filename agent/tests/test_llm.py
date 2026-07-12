@@ -28,7 +28,7 @@ class TestProviderCapabilityAliases:
             zhipu_caps.base_url_env,
         )
 
-    @pytest.mark.parametrize("model", ["glm-4.6", "glm-5.1"])
+    @pytest.mark.parametrize("model", ["glm-4.6", "glm-5.1", "glm-5.2"])
     def test_glm_model_inference_uses_zhipu(self, model: str) -> None:
         caps = get_provider_capabilities(provider=None, model=model)
 
@@ -36,6 +36,18 @@ class TestProviderCapabilityAliases:
 
     def test_glm_provider_env_names_use_zhipu_env(self) -> None:
         assert provider_env_names("glm") == ("ZHIPU_API_KEY", "ZHIPU_BASE_URL")
+
+    def test_zhipu_captures_reasoning_without_replay(self) -> None:
+        """GLM thinking models put chain-of-thought in ``reasoning_content`` (#458).
+
+        Capture must be on so reasoning survives the ChatOpenAI boundary, but
+        replay stays off (DeepSeek posture) until verified live against bigmodel.
+        """
+        for alias in ("zhipu", "glm"):
+            caps = get_provider_capabilities(alias)
+            assert caps.capture_reasoning is True
+            assert caps.send_reasoning_content is False
+            assert caps.normalize_assistant_content is False
 
     def test_kimi_coding_uses_own_env_namespace(self) -> None:
         caps = get_provider_capabilities("kimi-coding")

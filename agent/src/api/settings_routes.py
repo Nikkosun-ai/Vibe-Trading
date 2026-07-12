@@ -15,6 +15,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
+from src.config.accessor import reset_env_config
+
 # Agent root (agent/) — resolved from this file's location (agent/src/api/).
 _AGENT_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -254,7 +256,7 @@ def _sync_runtime_env(provider: LLMProviderOption, updates: Dict[str, str]) -> N
             os.environ.pop(key, None)
 
     if provider.api_key_env:
-        key_value = os.environ.get(provider.api_key_env, "")
+        key_value = os.environ.get(provider.api_key_env, "")  # noqa: env-gate — dynamic provider api_key_env
         if host._is_configured_secret(key_value, LLM_API_KEY_PLACEHOLDERS):
             os.environ["OPENAI_API_KEY"] = key_value
         else:
@@ -264,13 +266,15 @@ def _sync_runtime_env(provider: LLMProviderOption, updates: Dict[str, str]) -> N
     else:
         os.environ["OPENAI_API_KEY"] = "ollama"
 
-    base_url = os.environ.get(provider.base_url_env, "")
+    base_url = os.environ.get(provider.base_url_env, "")  # noqa: env-gate — dynamic provider base_url_env
     if base_url:
         os.environ["OPENAI_API_BASE"] = base_url
         os.environ["OPENAI_BASE_URL"] = base_url
     else:
         os.environ.pop("OPENAI_API_BASE", None)
         os.environ.pop("OPENAI_BASE_URL", None)
+
+    reset_env_config()
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +428,7 @@ def register_settings_routes(
                 os.environ["TUSHARE_TOKEN"] = token
             else:
                 os.environ.pop("TUSHARE_TOKEN", None)
+            reset_env_config()
 
         return _build_data_source_settings_response(
             host_ref._read_env_values(host_ref.ENV_PATH)

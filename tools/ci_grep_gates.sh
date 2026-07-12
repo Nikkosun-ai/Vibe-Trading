@@ -17,6 +17,9 @@
 #       (spec.md §"Vendor 数据 ToS").
 #   (d) No deprecated `datetime.utcnow(` usage or bare `datetime.now()` calls
 #       in Python sources; `datetime.now(timezone.utc)` is allowed.
+#   (e) No raw `os.getenv` / `os.environ.get` / `os.environ["KEY"]` reads
+#       outside the centralized config layer (`agent/src/config/`).
+#       AST-based; uses `tools/ci_env_var_gate.py`.
 #
 # Exclusions: .git, node_modules, __pycache__, .venv, dist, build, this
 # script itself. The HTML scan in (c) is scoped to wiki/alpha-library/**
@@ -122,6 +125,21 @@ if [ -n "$D_HITS" ]; then
     echo "$D_HITS"
     FAILED=1
 else
+    echo "${GREEN}ok${NC}"
+fi
+
+# -------------------------------------------------------------- gate (e)
+echo "[gate e] no raw os.getenv / os.environ reads outside config layer ..."
+E_OUTPUT=$(python tools/ci_env_var_gate.py 2>&1)
+E_RC=$?
+if [ "$E_RC" -ne 0 ]; then
+    echo "${RED}FAIL${NC}: raw env-var reads outside agent/src/config/:"
+    echo "$E_OUTPUT"
+    FAILED=1
+else
+    if [ -n "$E_OUTPUT" ]; then
+        echo "$E_OUTPUT"
+    fi
     echo "${GREEN}ok${NC}"
 fi
 

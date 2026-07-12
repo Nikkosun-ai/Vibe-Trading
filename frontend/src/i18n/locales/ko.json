@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v0.1.10"
+    "version": "v0.1.11"
   },
   "layout": {
     "home": "홈",
@@ -362,6 +362,10 @@
     "cancelGoal": "목표 취소",
     "describeGoal": "이 세션에 첨부할 리서치 목표를 설명하세요",
     "placeholder": "예: 000001.SZ에 대한 듀얼 MA 크로스오버 전략을 만들고 2024년 백테스트 수행",
+    "send": "보내기",
+    "messageInputLabel": "에이전트에게 보낼 메시지",
+    "inputHint": "Enter로 전송 · Shift+Enter로 줄바꿈",
+    "editGoalObjectiveLabel": "리서치 목표 편집",
     "exportChat": "채팅 내보내기",
     "stopGeneration": "생성 중지",
     "runSwarmTeam": "Swarm 팀 실행",
@@ -460,6 +464,7 @@
     "compareCol": "비교 대상",
     "delta": "차이",
     "selectTwoRuns": "비교할 두 실행을 선택하세요.",
+    "loadError": "실행 데이터를 불러오지 못했습니다. 다시 시도해주세요.",
     "totalReturn": "총 수익률",
     "annualizedReturn": "연환산 수익률",
     "sharpeRatio": "Sharpe 비율",
@@ -490,9 +495,9 @@
   },
   "alphaZoo": {
     "title": "Alpha Zoo",
-    "prebuiltAlpha": "4개 Zoo에 걸친 {{count}}개의 사전 구축 퀀트 Alpha",
-    "prebuiltAlphaLoading": "4개 Zoo에 걸친 사전 구축 퀀트 Alpha",
-    "browseDesc": "Qlib, Kakushadze 101, GTJA 191 및 학술 이상 현상 문헌에서 포뮬러 기반의 횡단면 시그널을 살펴보세요. Alpha를 클릭하여 공식과 소스 코드를 확인하거나, 벤치를 실행하여 특정 유니버스와 기간에 대해 Zoo 전체를 스코어링할 수 있습니다.",
+    "prebuiltAlpha": "5개 Zoo에 걸친 {{count}}개의 사전 구축 퀀트 Alpha",
+    "prebuiltAlphaLoading": "5개 Zoo에 걸친 사전 구축 퀀트 Alpha",
+    "browseDesc": "Qlib, Kakushadze 101, GTJA 191, 학술 이상 현상 문헌 및 PIT-safe 펀더멘털에서 포뮬러 기반의 횡단면 시그널을 살펴보세요. Alpha를 클릭하여 공식과 소스 코드를 확인하거나, 벤치를 실행하여 특정 유니버스와 기간에 대해 Zoo 전체를 스코어링할 수 있습니다.",
     "search": "검색",
     "searchPlaceholder": "ID 또는 별명으로 필터…",
     "zoo": "Zoo",
@@ -574,13 +579,15 @@
       "qlib158": "Qlib 158",
       "alpha101": "Kakushadze 101 공식 Alpha",
       "gtja191": "GTJA 191",
-      "academic": "학술 이상 현상"
+      "academic": "학술 이상 현상",
+      "fundamental": "펀더멘털 (PIT-safe)"
     },
     "zooCardDesc": {
       "qlib158": "Microsoft Qlib의 전체 158개 피처 라이브러리. 모멘텀, 변동성, 거래량 및 롤링 통계 시그널을 포함합니다.",
       "alpha101": "Kakushadze(2015)의 101개 공식 alpha 시그널. 단기 횡단면 시그널.",
       "gtja191": "궈타이쥔안증권의 191개 Alpha. 중국 A주 시장에 최적화된 기술적 및 마이크로스트럭처 시그널.",
-      "academic": "학술 문헌에서 선별된 장기 이상 현상(가치, 모멘텀, 품질, 저변동성 등)."
+      "academic": "학술 문헌에서 선별된 장기 이상 현상(가치, 모멘텀, 품질, 저변동성 등).",
+      "fundamental": "PIT-safe SEC company facts로 계산되는 퀄리티·밸류 팩터 — earnings yield, ROE, gross profitability, asset growth (filed-date 기준)."
     },
     "universeOption": {
       "csi300": "CSI 300 (중국 A주)",
@@ -714,7 +721,11 @@
     "leverageValue": "{{value}}× 레버리지",
     "tradesPerDay": "일 {{count}}건 거래",
     "adjustTitle": "이 mandate 조정",
-    "adjustPlaceholder": "예: 유지하되 일일 한도를 10으로 상향"
+    "adjustPlaceholder": "예: 유지하되 일일 한도를 10으로 상향",
+    "adjustInputLabel": "조정 요청 내용",
+    "confirmTitle": "mandate 커밋 확인",
+    "confirmDescription": "커밋하면 아래 한도로 에이전트에게 즉시 거래 권한이 부여됩니다.",
+    "confirmButton": "확인 후 커밋"
   },
   "messageBubble": {
     "copied": "복사됨",
@@ -746,7 +757,16 @@
     "featureStreaming": "실시간 스트리밍",
     "featureStreamingDesc": "에이전트의 사고, 도구 호출, 반복 과정을 지켜보세요",
     "featureReplay": "전략 리플레이",
-    "featureReplayDesc": "매매 일지 분석 + 섀도우 계좌 — 규칙 추출, 백테스트, PnL 차이 귀인 분석"
+    "featureReplayDesc": "매매 일지 분석 + 섀도우 계좌 — 규칙 추출, 백테스트, PnL 차이 귀인 분석",
+    "howItWorksTitle": "사용 방법",
+    "step1Title": "1. 전략을 설명하세요",
+    "step1Desc": "코드 없이 자연어로 테스트하고 싶은 내용을 에이전트에게 전달하세요.",
+    "step2Title": "2. 리서치와 백테스트 과정을 지켜보세요",
+    "step2Desc": "에이전트가 계획을 세우고 시장 데이터를 가져와 실시간으로 백테스트를 실행합니다.",
+    "step3Title": "3. 결과를 확인하세요",
+    "step3Desc": "성과 지표, 자산 곡선, 내보내기 가능한 Pine Script를 확인할 수 있습니다.",
+    "step4Title": "4. 준비되면 실전으로",
+    "step4Desc": "한도가 명시된 거래 mandate를 선택적으로 승인하세요 — 확인 없이는 어떤 주문도 실행되지 않습니다."
   },
   "errorBoundary": {
     "somethingWrong": "문제가 발생했습니다"

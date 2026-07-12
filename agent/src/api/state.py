@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from src.api._compat import host_attr as _host_attr, set_host_attr as _set_host_attr
 from src.api.helpers import RUNS_DIR, SESSIONS_DIR
+from src.config.accessor import get_env_config
 
 
 # ============================================================================
@@ -38,7 +39,7 @@ def _get_session_service():
     elif _session_service is not None:
         return _session_service
 
-    if os.getenv("ENABLE_SESSION_RUNTIME", "true").lower() != "true":
+    if not get_env_config().api.enable_session_runtime:
         return None
 
     import asyncio

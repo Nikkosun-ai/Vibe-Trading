@@ -84,8 +84,16 @@ const ZOO_CARDS: ZooCard[] = [
     title: "Academic Anomalies",
     description:
       "Curated long-horizon anomalies from the academic literature (value, momentum, quality, low-vol, etc.).",
-    approxCount: 6,
+    approxCount: 10,
     accent: "from-violet-500/20 to-violet-500/5",
+  },
+  {
+    id: "fundamental",
+    title: "PIT-Safe Fundamentals",
+    description:
+      "Quality and value factors computed from PIT-safe SEC company facts — earnings yield, ROE, gross profitability, asset growth (filed-date anchored).",
+    approxCount: 4,
+    accent: "from-rose-500/20 to-rose-500/5",
   },
 ];
 

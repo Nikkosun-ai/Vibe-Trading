@@ -1,4 +1,4 @@
-"""Alpha Zoo: 4 zoos (alpha101 / gtja191 / qlib158 / academic) × ~450 alphas.
+"""Alpha Zoo: 5 zoos (alpha101 / gtja191 / qlib158 / academic / fundamental) × 460 alphas.
 
 See `docs/alpha-zoo/spec.md` for the panel format contract and operator semantics.
 """

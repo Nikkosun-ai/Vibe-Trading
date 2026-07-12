@@ -120,7 +120,9 @@ _SESSION_STORE_CACHE: Any = None
 
 def _probe_model_name() -> str:
     """Return the configured LLM model id, or a placeholder."""
-    name = os.environ.get("LANGCHAIN_MODEL_NAME") or os.environ.get("OPENAI_MODEL")
+    from src.config.accessor import get_env_config
+
+    name = get_env_config().llm.langchain_model_name or get_env_config().llm.openai_model
     if name:
         return name
     env_path = _first_existing_env_path()
@@ -1041,7 +1043,9 @@ def _commit_mandate(proposal: Dict[str, Any], selected_ordinal: int) -> Dict[str
     """
     import httpx
 
-    base = os.environ.get("VIBE_TRADING_API_URL", "http://127.0.0.1:8000").rstrip("/")
+    from src.config.accessor import get_env_config
+
+    base = get_env_config().api.vibe_trading_api_url.rstrip("/")
     body = {
         "proposal_id": proposal.get("proposal_id"),
         "selected_ordinal": selected_ordinal,

@@ -42,6 +42,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from src.config.accessor import get_env_config
 from src.live.advisory import (
     AdvisoryContext,
     AdvisoryOrchestrator,
@@ -390,8 +391,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
         Never raises — all exceptions are caught and converted to
         REVIEW_UNAVAILABLE.
         """
-        env_val = os.getenv(_ADVISORY_ENABLED_ENV, "").strip().lower()
-        if env_val not in _ADVISORY_TRUTHY:
+        if not get_env_config().agent_tuning.vibe_trading_enable_advisory:
             return None
 
         providers = get_advisory_providers()

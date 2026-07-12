@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v0.1.10"
+    "version": "v0.1.11"
   },
   "layout": {
     "home": "ホーム",
@@ -362,6 +362,10 @@
     "cancelGoal": "目標をキャンセル",
     "describeGoal": "このセッションに添付するリサーチ目標を記述してください",
     "placeholder": "例: 000001.SZ のデュアル MA クロスオーバー戦略を作成し、2024 年をバックテストする",
+    "send": "送信",
+    "messageInputLabel": "エージェントへのメッセージ",
+    "inputHint": "Enter で送信 · Shift+Enter で改行",
+    "editGoalObjectiveLabel": "リサーチ目標を編集",
     "exportChat": "チャットをエクスポート",
     "stopGeneration": "生成を停止",
     "runSwarmTeam": "Swarm チームを実行",
@@ -460,6 +464,7 @@
     "compareCol": "比較対象",
     "delta": "差分",
     "selectTwoRuns": "比較する 2 つの実行を選択してください。",
+    "loadError": "実行データの読み込みに失敗しました。もう一度お試しください。",
     "totalReturn": "トータルリターン",
     "annualizedReturn": "年率リターン",
     "sharpeRatio": "Sharpe レシオ",
@@ -490,9 +495,9 @@
   },
   "alphaZoo": {
     "title": "Alpha Zoo",
-    "prebuiltAlpha": "4 つの Zoo にまたがる {{count}} 個の事前構築クォント Alpha",
-    "prebuiltAlphaLoading": "4 つの Zoo にまたがる事前構築クォント Alpha",
-    "browseDesc": "Qlib、Kakushadze 101、GTJA 191、および学術的アノマリー文献から、フォーミュラ駆動のクロスセクションシグナルを参照できます。任意の Alpha をクリックして式とソースコードを読むか、ベンチを実行して特定のユニバースと期間で Zoo 全体をスコアリングできます。",
+    "prebuiltAlpha": "5 つの Zoo にまたがる {{count}} 個の事前構築クォント Alpha",
+    "prebuiltAlphaLoading": "5 つの Zoo にまたがる事前構築クォント Alpha",
+    "browseDesc": "Qlib、Kakushadze 101、GTJA 191、学術的アノマリー文献、および PIT セーフなファンダメンタルズから、フォーミュラ駆動のクロスセクションシグナルを参照できます。任意の Alpha をクリックして式とソースコードを読むか、ベンチを実行して特定のユニバースと期間で Zoo 全体をスコアリングできます。",
     "search": "検索",
     "searchPlaceholder": "ID またはニックネームで絞り込み…",
     "zoo": "Zoo",
@@ -574,13 +579,15 @@
       "qlib158": "Qlib 158",
       "alpha101": "Kakushadze 101 定式 Alpha",
       "gtja191": "GTJA 191",
-      "academic": "学術的アノマリー"
+      "academic": "学術的アノマリー",
+      "fundamental": "ファンダメンタル（PIT セーフ）"
     },
     "zooCardDesc": {
       "qlib158": "Microsoft Qlib の全 158 特徴ライブラリ。モメンタム、ボラティリティ、出来高、ローリング統計シグナルをカバー。",
       "alpha101": "Kakushadze (2015) の 101 個の定式 alpha シグナル。短期ホライゾンのクロスセクションシグナル。",
       "gtja191": "国泰君安証券の 191 個の Alpha。中国 A 株市場向けにチューニングされたテクニカルおよびマイクロストラクチャーシグナル。",
-      "academic": "学術文献からの長期ホライズンアノマリーのキュレーション (バリュー、モメンタム、クオリティ、低ボラティリティなど)。"
+      "academic": "学術文献からの長期ホライズンアノマリーのキュレーション (バリュー、モメンタム、クオリティ、低ボラティリティなど)。",
+      "fundamental": "PIT セーフな SEC company facts から算出される品質・バリュー系ファクター — earnings yield、ROE、gross profitability、asset growth（filed-date 基準）。"
     },
     "universeOption": {
       "csi300": "CSI 300 (中国 A 株)",
@@ -714,7 +721,11 @@
     "leverageValue": "{{value}}× レバレッジ",
     "tradesPerDay": "{{count}} トレード/日",
     "adjustTitle": "このマンデートを調整",
-    "adjustPlaceholder": "例: そのままにして日次上限を 10 に引き上げる"
+    "adjustPlaceholder": "例: そのままにして日次上限を 10 に引き上げる",
+    "adjustInputLabel": "調整リクエスト内容",
+    "confirmTitle": "マンデートのコミットを確認",
+    "confirmDescription": "コミットすると、以下の上限でエージェントに取引権限が即座に付与されます。",
+    "confirmButton": "確認してコミット"
   },
   "messageBubble": {
     "copied": "コピーしました",
@@ -746,7 +757,16 @@
     "featureStreaming": "リアルタイムストリーミング",
     "featureStreamingDesc": "エージェントの思考、ツール呼び出し、反復を観察",
     "featureReplay": "戦略リプレイ",
-    "featureReplayDesc": "トレードジャーナル分析 + シャドウアカウント — ルールを抽出しバックテスト、損益差分を要因分解"
+    "featureReplayDesc": "トレードジャーナル分析 + シャドウアカウント — ルールを抽出しバックテスト、損益差分を要因分解",
+    "howItWorksTitle": "使い方",
+    "step1Title": "1. 戦略を記述する",
+    "step1Desc": "コード不要。自然言語でテストしたい内容をエージェントに伝えるだけ。",
+    "step2Title": "2. リサーチとバックテストを見守る",
+    "step2Desc": "エージェントが計画を立て、市場データを取得し、バックテストをリアルタイムで実行します。",
+    "step3Title": "3. 結果を確認する",
+    "step3Desc": "パフォーマンス指標、エクイティカーブ、エクスポート可能な Pine Script を確認できます。",
+    "step4Title": "4. 準備ができたら本番へ",
+    "step4Desc": "上限を明示したトレーディングマンデートを任意で承認 — 確認なしに注文が入ることはありません。"
   },
   "errorBoundary": {
     "somethingWrong": "問題が発生しました"

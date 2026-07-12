@@ -91,8 +91,10 @@ def _load_config() -> QVerisConfig:
     except Exception as exc:  # noqa: BLE001 - config read failures mean unavailable
         logger.warning("qveris config ignored: %s", exc)
 
-    api_key = os.getenv(_API_KEY_ENV, str(raw.get("api_key") or "")).strip()
-    base_url = os.getenv(_BASE_URL_ENV, str(raw.get("base_url") or _DEFAULT_BASE_URL)).strip()
+    from src.config.accessor import get_env_config
+
+    api_key = (get_env_config().data.qveris_api_key or str(raw.get("api_key") or "")).strip()
+    base_url = (get_env_config().data.qveris_base_url or str(raw.get("base_url") or _DEFAULT_BASE_URL)).strip()
     return QVerisConfig(
         enabled=bool(raw.get("enabled")),
         base_url=(base_url or _DEFAULT_BASE_URL).rstrip("/"),
@@ -108,7 +110,7 @@ def _normalize_mode(mode: str) -> str:
 
 def _min_interval() -> float:
     """Resolve the minimum interval between QVeris requests."""
-    raw = os.getenv(_MIN_INTERVAL_ENV)
+    raw = os.getenv(_MIN_INTERVAL_ENV)  # noqa: env-gate — loader-specific rate limit
     if raw is None or not raw.strip():
         return _DEFAULT_MIN_INTERVAL_S
     try:

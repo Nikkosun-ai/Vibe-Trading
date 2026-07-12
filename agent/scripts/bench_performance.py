@@ -124,7 +124,9 @@ if __name__ == "__main__":
     from src.factors._backend import HAS_BOTTLENECK
 
     print(f"Bottleneck available: {HAS_BOTTLENECK}")
-    print(f"VIBE_TRADING_DISABLE_BOTTLENECK: {os.environ.get('VIBE_TRADING_DISABLE_BOTTLENECK', '0')}")
+    from src.config.accessor import get_env_config
+
+    print(f"VIBE_TRADING_DISABLE_BOTTLENECK: {get_env_config().agent_tuning.vibe_trading_disable_bottleneck}")
     print()
 
     bench_operators()

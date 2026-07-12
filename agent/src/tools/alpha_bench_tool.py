@@ -38,6 +38,7 @@ from typing import Any
 import pandas as pd
 
 from src.agent.tools import BaseTool
+from src.config.accessor import get_env_config
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,7 @@ def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
     the requested window; if that call fails we degrade to a 30-name
     blue-chip fallback so the bench still runs.
     """
-    token = os.getenv("TUSHARE_TOKEN", "").strip()
+    token = get_env_config().data.tushare_token.strip()
     if not token or token == "your-tushare-token":
         raise RuntimeError(
             "TUSHARE_TOKEN not in agent/.env or environment; required for csi300 universe"

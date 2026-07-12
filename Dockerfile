@@ -16,7 +16,7 @@ FROM python:3.11-slim AS runtime
 
 LABEL org.opencontainers.image.title="Vibe-Trading" \
     org.opencontainers.image.description="Natural-language finance research AI agent with backtesting" \
-    org.opencontainers.image.version="0.1.10" \
+    org.opencontainers.image.version="0.1.11" \
     org.opencontainers.image.source="https://github.com/HKUDS/Vibe-Trading" \
     org.opencontainers.image.licenses="MIT"
 

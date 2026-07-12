@@ -78,6 +78,8 @@ def test_docker_gateway_dev_write_allowed_only_with_compose_trust_flag(
     assert not api_server._is_local_client(request)
 
     monkeypatch.setenv("VIBE_TRADING_TRUST_DOCKER_LOOPBACK", "1")
+    from src.config.accessor import reset_env_config
+    reset_env_config()
 
     assert api_server._is_local_client(request)
 

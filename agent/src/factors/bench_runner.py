@@ -22,6 +22,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Callable, Iterable
 
+from src.config.accessor import get_env_config
 from src.factors.factor_analysis_core import compute_ic_series
 from src.factors.registry import (
     Registry,
@@ -205,7 +206,7 @@ def run_bench(
     n_total = len(alpha_ids)
 
     try:
-        n_workers = int(os.environ.get("VIBE_TRADING_BENCH_WORKERS", "0") or os.cpu_count() or 1)
+        n_workers = get_env_config().agent_tuning.vibe_trading_bench_workers or os.cpu_count() or 1
     except ValueError:
         logger.warning("invalid VIBE_TRADING_BENCH_WORKERS; falling back to sequential")
         n_workers = 1

@@ -15,6 +15,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from src.config.accessor import get_env_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,10 +38,7 @@ _scheduled_research_executor: Any = None
 
 def _scheduled_research_scheduler_enabled() -> bool:
     """Return whether scheduled research execution is enabled."""
-    return (
-        os.getenv(_SCHEDULED_RESEARCH_SCHEDULER_ENV, "").strip().lower()
-        in _SCHEDULED_RESEARCH_TRUE_VALUES
-    )
+    return get_env_config().agent_tuning.vibe_trading_enable_scheduler
 
 
 def _get_scheduled_research_store():

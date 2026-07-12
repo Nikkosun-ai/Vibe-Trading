@@ -68,12 +68,14 @@ def _read_config_file() -> QVerisConfig:
 
 def load_qveris_config() -> QVerisConfig:
     """Load QVeris config with environment overrides applied."""
+    from src.config.accessor import get_env_config
+
     cfg = _read_config_file()
-    env_key = os.getenv("QVERIS_API_KEY")
-    env_url = os.getenv("QVERIS_BASE_URL")
-    if env_key is not None:
+    env_key = get_env_config().data.qveris_api_key
+    env_url = get_env_config().data.qveris_base_url
+    if env_key:
         cfg.api_key = env_key.strip()
-    if env_url is not None:
+    if env_url:
         cfg.base_url = env_url.strip() or DEFAULT_BASE_URL
     return cfg
 

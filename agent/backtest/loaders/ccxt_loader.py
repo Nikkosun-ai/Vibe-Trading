@@ -42,7 +42,7 @@ _CCXT_FETCH_BUDGET_S = positive_env_float("CCXT_FETCH_BUDGET_S", 60.0)
 
 def _first_proxy_env(*names: str) -> str:
     for name in names:
-        value = os.getenv(name, "").strip()
+        value = os.getenv(name, "").strip()  # noqa: env-gate — system proxy vars
         if value:
             return value
     return ""
@@ -84,7 +84,9 @@ class DataLoader:
     def _get_exchange(self):
         """Create exchange instance."""
         import ccxt
-        exchange_id = os.getenv("CCXT_EXCHANGE", "binance").lower()
+        from src.config.accessor import get_env_config
+
+        exchange_id = get_env_config().data.ccxt_exchange.lower()
         exchange_cls = getattr(ccxt, exchange_id, None)
         if exchange_cls is None:
             logger.warning("Unknown CCXT exchange %s, falling back to binance", exchange_id)

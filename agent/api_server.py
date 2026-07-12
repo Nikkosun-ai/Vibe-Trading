@@ -37,14 +37,11 @@ from src.api.security import (  # noqa: F401, E402
     _CORS_ORIGINS,
     _DEFAULT_CORS_ORIGINS,
     _DEFAULT_LOOPBACK_HOSTS,
-    _DOCKER_LOOPBACK_ENV,
     _EXTRA_LOOPBACK_HOSTS,
     _SAFE_BROWSER_METHODS,
-    _SHELL_TOOLS_ENV,
     _auth_credential_from_header_or_query,
     _configured_api_key,
     _default_gateway_ips,
-    _env_flag_enabled,
     _env_shell_tools_enabled,
     _host_without_port,
     _is_allowed_loopback_host,
@@ -157,7 +154,9 @@ async def _run_startup_preflight() -> None:
 
     run_preflight(console)
     _start_scheduled_research_executor()
-    if os.getenv("VIBE_TRADING_CHANNELS_AUTO_START", "").strip().lower() in {"1", "true", "yes"}:
+    from src.config.accessor import get_env_config
+
+    if get_env_config().agent_tuning.vibe_trading_channels_auto_start:
         await _start_channel_runtime()
 
 

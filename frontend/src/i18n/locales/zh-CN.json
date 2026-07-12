@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v0.1.10"
+    "version": "v0.1.11"
   },
   "layout": {
     "home": "首页",
@@ -362,6 +362,10 @@
     "cancelGoal": "取消目标",
     "describeGoal": "描述要附加到此会话的研究目标",
     "placeholder": "例如：为 000001.SZ 创建双均线交叉策略，回测 2024 年",
+    "send": "发送",
+    "messageInputLabel": "发送给智能体的消息",
+    "inputHint": "Enter 送出 · Shift+Enter 换行",
+    "editGoalObjectiveLabel": "编辑研究目标内容",
     "exportChat": "导出对话",
     "stopGeneration": "停止生成",
     "runSwarmTeam": "运行群体团队",
@@ -460,6 +464,7 @@
     "compareCol": "对比",
     "delta": "差值",
     "selectTwoRuns": "选择两次运行以对比其指标。",
+    "loadError": "加载运行数据失败，请重试。",
     "totalReturn": "总收益率",
     "annualizedReturn": "年化收益率",
     "sharpeRatio": "夏普比率",
@@ -490,9 +495,9 @@
   },
   "alphaZoo": {
     "title": "Alpha 因子库",
-    "prebuiltAlpha": "{{count}} 个预构建量化 Alpha，覆盖 4 个因子库",
-    "prebuiltAlphaLoading": "预构建量化 Alpha，覆盖 4 个因子库",
-    "browseDesc": "浏览来自 Qlib、Kakushadze 101 公式集、GTJA 191 以及学术异象文献的公式驱动截面信号。点击任意 Alpha 查看公式和源码，或运行基准测试在特定市场和时间段上评分整个因子库。",
+    "prebuiltAlpha": "{{count}} 个预构建量化 Alpha，覆盖 5 个因子库",
+    "prebuiltAlphaLoading": "预构建量化 Alpha，覆盖 5 个因子库",
+    "browseDesc": "浏览来自 Qlib、Kakushadze 101 公式集、GTJA 191、学术异象文献以及 PIT 安全基本面因子的公式驱动截面信号。点击任意 Alpha 查看公式和源码，或运行基准测试在特定市场和时间段上评分整个因子库。",
     "search": "搜索",
     "searchPlaceholder": "按 ID 或昵称筛选…",
     "zoo": "因子库",
@@ -574,13 +579,15 @@
       "qlib158": "Qlib 158",
       "alpha101": "Kakushadze 101 公式化 Alpha",
       "gtja191": "国泰君安 191",
-      "academic": "学术文献异象因子"
+      "academic": "学术文献异象因子",
+      "fundamental": "基本面因子（PIT 安全）"
     },
     "zooCardDesc": {
       "qlib158": "微软 Qlib 完整的 158 特征库，涵盖动量、波动率、成交量及滚动统计信号。",
       "alpha101": "来自 Kakushadze（2015）的 101 个公式化 Alpha 信号；短周期截面信号。",
       "gtja191": "国泰君安证券的 191 个 Alpha；专门针对中国 A 股市场优化的技术面与微观结构信号。",
-      "academic": "来自学术文献的长期异象因子精选（价值、动量、质量、低波动率等）。"
+      "academic": "来自学术文献的长期异象因子精选（价值、动量、质量、低波动率等）。",
+      "fundamental": "基于 PIT 安全的 SEC company facts 计算的质量与价值因子——盈利收益率、ROE、毛利率、资产增长（按 filed-date 锚定）。"
     },
     "universeOption": {
       "csi300": "沪深 300（A 股）",
@@ -714,7 +721,11 @@
     "leverageValue": "{{value}}× 杠杆",
     "tradesPerDay": "{{count}} 笔/天",
     "adjustTitle": "调整此 mandate",
-    "adjustPlaceholder": "例如：保持不变但将每日上限提高到 10"
+    "adjustPlaceholder": "例如：保持不变但将每日上限提高到 10",
+    "adjustInputLabel": "调整请求内容",
+    "confirmTitle": "确认提交 mandate",
+    "confirmDescription": "提交后将立即依据下方额度授权智能体进行真实交易。",
+    "confirmButton": "确认并提交"
   },
   "messageBubble": {
     "copied": "已复制",
@@ -746,7 +757,16 @@
     "featureStreaming": "实时流式输出",
     "featureStreamingDesc": "观看智能体思考、调用工具和迭代的全过程",
     "featureReplay": "策略回放",
-    "featureReplayDesc": "交易日志分析器 + 影子账户 —— 提取你的规则、回测验证、归因盈亏差异"
+    "featureReplayDesc": "交易日志分析器 + 影子账户 —— 提取你的规则、回测验证、归因盈亏差异",
+    "howItWorksTitle": "怎么使用",
+    "step1Title": "1. 描述你的策略",
+    "step1Desc": "用自然语言告诉智能体你想测试什么，不需要写代码。",
+    "step2Title": "2. 观看研究与回测过程",
+    "step2Desc": "智能体会规划、抓取市场数据并即时执行回测，每一步都能看到。",
+    "step3Title": "3. 查看结果",
+    "step3Desc": "查看绩效指标、净值曲线，以及可导出的 Pine Script 策略代码。",
+    "step4Title": "4. 准备好了再上线",
+    "step4Desc": "可选择授权明确额度的交易 mandate——未经你确认不会下任何真实订单。"
   },
   "errorBoundary": {
     "somethingWrong": "出了点问题"

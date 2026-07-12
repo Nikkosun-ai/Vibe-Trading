@@ -16,6 +16,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Callable, TypeVar
 
+from src.config.accessor import get_env_config
 from src.goal.models import (
     AuditRow,
     EvidenceInput,
@@ -70,7 +71,7 @@ def _json_loads(value: str | None, default: object) -> object:
 
 def _default_db_path() -> Path:
     """Return the configured goal ledger database path."""
-    raw_path = os.getenv(_DB_PATH_ENV, "").strip()
+    raw_path = get_env_config().paths.vibe_trading_goal_db_path.strip()
     if raw_path:
         return Path(raw_path).expanduser()
     return _DEFAULT_DB_PATH

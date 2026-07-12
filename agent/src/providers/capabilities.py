@@ -82,7 +82,17 @@ _KIMI_CODING_CAPABILITIES = ProviderCapabilities(
     default_headers={"User-Agent": _KIMI_USER_AGENT},
 )
 
-_ZHIPU_CAPABILITIES = ProviderCapabilities("zhipu", "ZHIPU_API_KEY", "ZHIPU_BASE_URL")
+# GLM thinking models (glm-4.5+/glm-5.x) stream the chain-of-thought as
+# ``reasoning_content`` with the final answer in ``content``. Capture the
+# reasoning like DeepSeek; do NOT replay it on assistant turns —
+# ``send_reasoning_content`` stays off until verified live against bigmodel
+# (DeepSeek rejects replayed reasoning; zhipu is unconfirmed). See #458.
+_ZHIPU_CAPABILITIES = ProviderCapabilities(
+    "zhipu",
+    "ZHIPU_API_KEY",
+    "ZHIPU_BASE_URL",
+    capture_reasoning=True,
+)
 
 _OPENAI_CODEX_CAPABILITIES = ProviderCapabilities("openai-codex", None, "OPENAI_CODEX_BASE_URL")
 

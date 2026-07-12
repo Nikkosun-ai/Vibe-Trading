@@ -18,6 +18,7 @@ import time
 from typing import Any
 
 from src.agent.tools import BaseTool
+from src.config.accessor import _parse_bool, get_env_config
 from src.security.scanner import with_security_warnings
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ def _aliyun_iqs_search(query: str, max_results: int = 5) -> list[dict] | None:
     category and rerank. Requires ``ALIYUN_IQS_API_KEY``; returns None when unset.
     Pure stdlib.
     """
-    key = os.getenv("ALIYUN_IQS_API_KEY", "").strip()
+    key = get_env_config().data.aliyun_iqs_api_key.strip()
     if not key:
         return None
     import json as _json
@@ -181,12 +182,12 @@ class WebSearchTool(BaseTool):
         """
         query = kwargs["query"]
         max_results = min(int(kwargs.get("max_results", 5)), 10)
-        backends = os.getenv("VIBE_TRADING_SEARCH_BACKENDS", _DEFAULT_BACKENDS).strip() or "auto"
+        backends = (get_env_config().agent_tuning.vibe_trading_search_backends or _DEFAULT_BACKENDS).strip() or "auto"
 
         # Fast path: Alibaba Cloud IQS if configured (official API, CN-direct,
         # ~1s, structured + snippet, best quality). Skip ddgs entirely when IQS
         # is available — ddgs engines are unreachable from typical CN egress.
-        if os.getenv("ALIYUN_IQS_API_KEY", "").strip():
+        if get_env_config().data.aliyun_iqs_api_key.strip():
             try:
                 raw = _aliyun_iqs_search(query, max_results=max_results)
                 if raw:
@@ -287,7 +288,7 @@ class WebSearchTool(BaseTool):
         # query quality), then cn.bing (real URLs, broader). Toggle via
         # VIBE_TRADING_SEARCH_BING_FALLBACK (default on).
         fb_err = "disabled"
-        if os.getenv("VIBE_TRADING_SEARCH_BING_FALLBACK", "1").strip().lower() in ("1", "true", "yes"):
+        if get_env_config().agent_tuning.vibe_trading_search_bing_fallback:
             for fb_name, fb_fn in (("sogou", _sogou_search), ("bing_cn", _bing_cn_search)):
                 try:
                     raw = fb_fn(query, max_results=max_results)
