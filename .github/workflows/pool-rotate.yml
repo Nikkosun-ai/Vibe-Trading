@@ -1,0 +1,24 @@
+name: NQP Pool Weekly Rotate  
+  
+on:  
+  schedule:  
+    - cron: '0 0 * * 1'  
+  workflow_dispatch:  
+  
+jobs:  
+  rotate:  
+    runs-on: ubuntu-latest  
+    steps:  
+      - uses: actions/checkout@v4  
+      - uses: actions/setup-python@v5  
+        with:  
+          python-version: '3.11'  
+      - run: pip install akshare  
+      - run: python cloud/pool_rotator.py  
+      - run: python cloud/sync_pool.py  
+      - run: |  
+          git config user.name github-actions  
+          git config user.email github-actions@github.com  
+          git add agent/daily_pipeline.py agent/pool.json  
+          git diff --cached --quiet || git commit -m "weekly pool rotate [skip ci]"  
+          git push 
