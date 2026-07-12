@@ -22,5 +22,5 @@ jobs:
 
       - name: Run daily push
         env:
-          FANGTANG_KEY: ${{ secrets.FANGTANG_KEY }}
+          FANGTANG_KEY: ${{ secrets.SERVER_CHAN_SENDKEY }}
         run: python cloud/daily_push.py
