@@ -2,7 +2,7 @@ name: NQP Pool Weekly Rotation
 
 on:
   schedule:
-    - cron: '0 0 * * 1'   # 每周一 00:00 UTC (= 北京时间 08:00)
+    - cron: '0 12 * * 0'  # 每周日 12:00 UTC (= 北京时间 20:00)
   workflow_dispatch:        # 手动触发
 
 jobs:
