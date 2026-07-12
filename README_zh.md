@@ -50,14 +50,16 @@
 
 ## 📰 News
 
+- **2026-07-12** 🧪 **Strategy Development Manager + 贡献者修复批次**：新的 `strategy-dev-manager` skill（第 87 个）把学术论文和券商研报转化为已注册的因子/策略，带持久化 artifact store 和自动化 IC/Sharpe 衰减监控 —— `sdm_register` / `sdm_status` / `sdm_decay_scan` 驱动 active → monitoring → decayed → disabled 生命周期，数据存于 `~/.vibe-trading/`（[#457](https://github.com/HKUDS/Vibe-Trading/pull/457)，关闭 [#455](https://github.com/HKUDS/Vibe-Trading/issues/455)，感谢 @shadowinlife）。同时合入：Correlation 页支持裸 ticker（`AAPL,SPY`）并走完整 loader fallback 链（[#472](https://github.com/HKUDS/Vibe-Trading/pull/472)，关闭 [#471](https://github.com/HKUDS/Vibe-Trading/issues/471)，感谢 @yxhuang），`local` loader 通过 OHLCV 重采样真正支持请求的 interval（[#467](https://github.com/HKUDS/Vibe-Trading/pull/467)，感谢 @Shizoqua），Binance USD-M 永续历史数据落地 —— 显式 `BTC-USDT-PERP` 路由 + 成交价/标记价分离，作为 [#462](https://github.com/HKUDS/Vibe-Trading/issues/462) 的第一片（[#470](https://github.com/HKUDS/Vibe-Trading/pull/470)，感谢 @honginp），FastMCP transport import 兼容两种模块布局（[#469](https://github.com/HKUDS/Vibe-Trading/pull/469)，感谢 @roberttidball）。
+
 - **2026-07-11** 🚀 **v0.1.11 发布**（`pip install -U vibe-trading-ai`）：汇总 0.1.10 以来三周的全部更新——一等公民级印度股票（NSE/BSE）回测、PIT-safe 基本面因子层（Alpha Zoo → 460）、16 个适配器的 IM 通道运行时、端到端定时研究、可选 QVeris 付费数据，以及今天的贡献者批次：turnover-aware 组合优化器（[#466](https://github.com/HKUDS/Vibe-Trading/pull/466)，感谢 @Robin1987China）、`analyze_image` 视觉工具 + NapCat DM pairing + IM 媒体读取修复（[#464](https://github.com/HKUDS/Vibe-Trading/pull/464)/[#463](https://github.com/HKUDS/Vibe-Trading/pull/463)/[#465](https://github.com/HKUDS/Vibe-Trading/issues/465)，感谢 @fei-moss）、长桥 Decimal 序列化（[#459](https://github.com/HKUDS/Vibe-Trading/pull/459)，感谢 @fanfpy），以及打包 manifest 数量守卫（[#461](https://github.com/HKUDS/Vibe-Trading/pull/461)，感谢 @asahikiko）。完整细节：[CHANGELOG](CHANGELOG.md) · [release notes](https://github.com/HKUDS/Vibe-Trading/releases/tag/v0.1.11)。
 
 - **2026-07-10** 🇮🇳 **印度股票（NSE/BSE）支持 + 环境变量集中化**：新增专属 `IndiaEquityEngine`——T+1 交收、涨跌停熔断带、config 驱动的 STT/印花税/交易所/SEBI/GST 成本栈——配套 `.NS`/`.BO` 符号路由、可选的只读 Shoonya/Dhan 数据桥，255 个 alpha101/qlib158 因子纳入新的 `equity_in` universe（[#305](https://github.com/HKUDS/Vibe-Trading/pull/305)，感谢 @muku314115）。环境变量统一收进单一 Pydantic `EnvConfig` schema，并新增 AST CI 门禁防止未来 `os.getenv` 蔓延（[#440](https://github.com/HKUDS/Vibe-Trading/pull/440)，关闭 [#438](https://github.com/HKUDS/Vibe-Trading/issues/438)，感谢 @shadowinlife）。另有：提交真实交易 mandate 前的二次确认弹窗与统一错误提示（[#453](https://github.com/HKUDS/Vibe-Trading/pull/453)，感谢 @wison1717-maker）、scheduled-research 路由测试（[#452](https://github.com/HKUDS/Vibe-Trading/pull/452)，感谢 @Robin1987China），以及 zhipu provider 上 GLM 思考模型不再丢失 reasoning 流（[#458](https://github.com/HKUDS/Vibe-Trading/issues/458)）。
 
-- **2026-07-09** 🧯 **Docker 启动解阻 + provider/CLI 贡献者批次**：当 FastAPI route 遍历遇到没有 `path` 的 included-router-like 条目时，Docker/server 启动不再直接崩溃（[#450](https://github.com/HKUDS/Vibe-Trading/issues/450)，感谢 @Penn-Live）。同时合入一批排队中的 quick-win 贡献者修复：OKX / Tushare / yfinance 的 loader `fetch()` 签名已对齐协议（[#437](https://github.com/HKUDS/Vibe-Trading/pull/437)，感谢 @shadowinlife），CLI resume prompt 会保留用户输入的第一句话（[#448](https://github.com/HKUDS/Vibe-Trading/pull/448)，关闭 [#447](https://github.com/HKUDS/Vibe-Trading/issues/447)，感谢 @morluto），Codex OAuth 默认模型更新为 `openai-codex/gpt-5.4`（[#446](https://github.com/HKUDS/Vibe-Trading/pull/446)，感谢 @morluto），Kimi for Coding 成为独立 provider（[#435](https://github.com/HKUDS/Vibe-Trading/pull/435)，感谢 @yxhuang），opencode provider 映射已接入（[#444](https://github.com/HKUDS/Vibe-Trading/pull/444)，感谢 @imsankz），Tushare reference code fence 也从 `pyhton` 修成 `python`（[#449](https://github.com/HKUDS/Vibe-Trading/pull/449)，感谢 @flash1234pku）。验证包含 focused server/CLI/provider/loader tests、Docker build 和 `/health` smoke。
-
 <details>
 <summary>更早的更新</summary>
+
+- **2026-07-09** 🧯 **Docker 启动解阻 + provider/CLI 贡献者批次**：当 FastAPI route 遍历遇到没有 `path` 的 included-router-like 条目时，Docker/server 启动不再直接崩溃（[#450](https://github.com/HKUDS/Vibe-Trading/issues/450)，感谢 @Penn-Live）。同时合入一批排队中的 quick-win 贡献者修复：OKX / Tushare / yfinance 的 loader `fetch()` 签名已对齐协议（[#437](https://github.com/HKUDS/Vibe-Trading/pull/437)，感谢 @shadowinlife），CLI resume prompt 会保留用户输入的第一句话（[#448](https://github.com/HKUDS/Vibe-Trading/pull/448)，关闭 [#447](https://github.com/HKUDS/Vibe-Trading/issues/447)，感谢 @morluto），Codex OAuth 默认模型更新为 `openai-codex/gpt-5.4`（[#446](https://github.com/HKUDS/Vibe-Trading/pull/446)，感谢 @morluto），Kimi for Coding 成为独立 provider（[#435](https://github.com/HKUDS/Vibe-Trading/pull/435)，感谢 @yxhuang），opencode provider 映射已接入（[#444](https://github.com/HKUDS/Vibe-Trading/pull/444)，感谢 @imsankz），Tushare reference code fence 也从 `pyhton` 修成 `python`（[#449](https://github.com/HKUDS/Vibe-Trading/pull/449)，感谢 @flash1234pku）。验证包含 focused server/CLI/provider/loader tests、Docker build 和 `/health` smoke。
 
 - **2026-07-08** 💎 **基本面因子层（Phase 1）+ 可选 QVeris 付费数据 + 维护日**：PIT-safe 的 SEC 财报数据现在直接进日频因子 panel —— `fund:*` 面板列、以 filed 日锚定（重述与 YTD 帧防护），新增 4 个质量/价值因子（zoo 现 460 个）。数据路由新增可选付费轨：18 个免费源仍是默认，QVeris 一把 key 解锁 63+ provider，入口 Settings → QVeris 或 `vibe-trading data mode paid`（见下方 QVeris 小节）。另外：`api_server` 模块化收官（1,103 → 371 行，[#424](https://github.com/HKUDS/Vibe-Trading/pull/424) 关闭 [#331](https://github.com/HKUDS/Vibe-Trading/issues/331)，感谢 @shadowinlife）、回测 `validation.json` 不再要求 artifacts 目录预先存在（[#429](https://github.com/HKUDS/Vibe-Trading/pull/429)，感谢 @isaveall）、`--swarm-run` 报错更清晰（[#428](https://github.com/HKUDS/Vibe-Trading/issues/428)，感谢 @isaveall），以及我们 revert 了导致会话聊天崩溃的 governance stack（[#433](https://github.com/HKUDS/Vibe-Trading/issues/433)，感谢 @yxhuang 的精准诊断）。
 
@@ -337,9 +339,9 @@ vibe-trading run -p "Analyze my trading behavior, extract my shadow strategy, an
 为保持主 README 易读，详细清单折叠在下方。需要检查可用构件时可展开查看。
 
 <details>
-<summary><b>Finance Skill Library</b> <sub>9 个类别中的 86 个 skills</sub></summary>
+<summary><b>Finance Skill Library</b> <sub>9 个类别中的 87 个 skills</sub></summary>
 
-- 📊 86 个专业金融 skills，分布在 9 个类别中
+- 📊 87 个专业金融 skills，分布在 9 个类别中
 - 🌐 覆盖传统市场、加密与 DeFi
 - 🔬 从数据源到量化研究的完整能力链路
 
@@ -352,7 +354,7 @@ vibe-trading run -p "Analyze my trading behavior, extract my shadow strategy, an
 | Crypto | 7 | `perp-funding-basis`, `liquidation-heatmap`, `stablecoin-flow`, `defi-yield`, `onchain-analysis` |
 | Flow | 8 | `hk-connect-flow`, `us-etf-flow`, `edgar-sec-filings`, `financial-statement`, `adr-hshare` |
 | Tool | 10 | `backtest-diagnose`, `report-generate`, `pine-script`, `doc-reader`, `web-reader`, `vnpy-export`, `trade-journal` |
-| Research | 1 | `alpha-zoo` |
+| Research | 2 | `alpha-zoo`, `strategy-dev-manager` |
 | Risk Analysis | 1 | `ashare-pre-st-filter` |
 
 </details>
@@ -641,7 +643,7 @@ vibe-trading channels status --local  # 检查 IM 通道配置和依赖安装提
 | 命令 | 说明 |
 |------|------|
 | `/help` | 显示所有命令 |
-| `/skills` | 列出全部 86 个 finance skills |
+| `/skills` | 列出全部 87 个 finance skills |
 | `/swarm` | 列出 30 个 swarm team presets |
 | `/swarm run <preset> [vars_json]` | 运行一个 swarm team，并实时流式展示 |
 | `/swarm list` | Swarm 运行历史 |
@@ -948,7 +950,7 @@ npx clawhub@latest install vibe-trading --force
 <details>
 <summary><b>OpenSpace — 自进化 skills</b></summary>
 
-全部 86 个 finance skills 都发布在 [open-space.cloud](https://open-space.cloud)，并通过 OpenSpace 的自进化引擎自主演进。
+全部 87 个 finance skills 都发布在 [open-space.cloud](https://open-space.cloud)，并通过 OpenSpace 的自进化引擎自主演进。
 
 要配合 OpenSpace 使用，请将两个 MCP servers 都加入你的 agent config：
 
@@ -970,7 +972,7 @@ npx clawhub@latest install vibe-trading --force
 }
 ```
 
-OpenSpace 会自动发现全部 86 个 skills，启用 auto-fix、auto-improve 和社区分享。在任意已连接 OpenSpace 的智能体中，可通过 `search_skills("finance backtest")` 搜索 Vibe-Trading skills。
+OpenSpace 会自动发现全部 87 个 skills，启用 auto-fix、auto-improve 和社区分享。在任意已连接 OpenSpace 的智能体中，可通过 `search_skills("finance backtest")` 搜索 Vibe-Trading skills。
 
 </details>
 
@@ -992,7 +994,7 @@ Vibe-Trading/
 │   │   ├── agent/                  # ReAct agent 内核
 │   │   │   ├── loop.py             #   5 层上下文压缩 + 读/写工具批处理
 │   │   │   ├── context.py          #   system prompt + 持久记忆自动召回
-│   │   │   ├── skills.py           #   skill loader（86 个内置 + 通过 CRUD 创建的用户 skill）
+│   │   │   ├── skills.py           #   skill loader（87 个内置 + 通过 CRUD 创建的用户 skill）
 │   │   │   ├── tools.py            #   tool 基类 + 注册表
 │   │   │   ├── memory.py           #   每个 run 的轻量 workspace 状态
 │   │   │   ├── frontmatter.py      #   共享的 YAML frontmatter 解析器
@@ -1019,7 +1021,7 @@ Vibe-Trading/
 │   │   ├── api/                    # FastAPI 路由模块
 │   │   │   └── alpha_routes.py     #   /alpha/list、/alpha/{id}、/alpha/bench、SSE 流
 │   │   │
-│   │   ├── skills/                 # 9 个类别共 86 个 finance skills（每个一份 SKILL.md）
+│   │   ├── skills/                 # 9 个类别共 87 个 finance skills（每个一份 SKILL.md）
 │   │   ├── swarm/                  # Swarm DAG 执行引擎
 │   │   │   └── presets/            #   30 个 swarm preset YAML 定义
 │   │   ├── session/                # 多轮对话 + FTS5 session 搜索
