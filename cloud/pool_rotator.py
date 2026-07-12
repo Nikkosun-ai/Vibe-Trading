@@ -1,646 +1,692 @@
 #!/usr/bin/env python3
 """
-NQP V3.3 月度股票池自动轮换引擎
-===================================
-每月第一个交易日运行，自动扫描A股市场，按新质生产力赛道
-筛选符合条件的标的，生成新的交易池。
+NQP V3.3 月度池轮换 v6 — Actions 全链路多源降级
 
-筛选流程：
-  1. 从同花顺概念板块获取赛道候选股
-  2. 基础过滤：市值>100亿 + 日均成交>2亿 + PE>0
-  3. 技术过滤：收盘价 > MA200
-  4. 综合评分：趋势强度 + 动量 + 流动性
-  5. 每赛道取Top5 → 输出新池 + 变动报告
+v6 修复:
+  1. baostock query_stock_industry() 实际返回 [date, code, name, industry, class]
+     代码错误地将 row[0](日期) 当 code 解析 → 全部被过滤
+     修复: row[1] → code, row[3] → industry
+  2. 缓存回退时 boards 可能是 list → .keys() 崩溃
+     修复: 加载缓存后做类型兼容
 
-用法：
-  python cloud/pool_rotator.py                    # 自动模式（输出json）
-  python cloud/pool_rotator.py --dry-run          # 预览模式（仅打印，不写文件）
-  python cloud/pool_rotator.py --date 2026-07-01  # 指定日期
+四级降级（概念板块）：
+  1. akshare (最快)
+  2. eastmoney 直连 (HTTP, 国内源)
+  3. baostock 行业分类 (TCP, 最稳)
+  4. 本地缓存 (.pool_cache.json)
 """
 
-import argparse
 import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+import argparse
+from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
-import numpy as np
-import pandas as pd
-import requests
+# ── 项目根 ──────────────────────────────────────────────
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CACHE_FILE = PROJECT_ROOT / "cloud" / ".pool_cache.json"
+RESULT_FILE = PROJECT_ROOT / "cloud" / "pool_result.json"
 
-# ============================================================
-# 赛道-概念关键词映射
-# ============================================================
-SECTOR_CONCEPT_MAP: Dict[str, List[str]] = {
-    "半导体": [
-        "半导体", "芯片", "集成电路", "光刻机", "光刻胶",
-        "存储芯片", "先进封装", "第三代半导体", "EDA",
-        "半导体设备", "半导体材料", "晶圆", "IGBT"
-    ],
-    "AI算力": [
-        "AI", "人工智能", "算力", "CPO", "光模块",
-        "服务器", "数据中心", "液冷", "算力租赁",
-        "AI芯片", "GPU", "HBM", "高速连接", "云计算"
-    ],
-    "机器人": [
-        "机器人", "人形机器人", "工业母机", "减速器",
-        "伺服电机", "传感器", "机器视觉", "自动化",
-        "智能制造", "空心杯电机", "丝杠", "执行器"
-    ],
-    "新能源": [
-        "新能源", "储能", "光伏", "锂电池", "固态电池",
-        "钠电池", "充电桩", "逆变器", "风电", "氢能",
-        "智能电网", "特高压", "光伏逆变器", "海上风电"
-    ],
-    "低空经济": [
-        "低空经济", "无人机", "飞行汽车", "eVTOL",
-        "通用航空", "航天", "卫星导航", "北斗",
-        "商业航天", "航空发动机"
-    ],
-    "量子计算": [
-        "量子", "量子计算", "量子通信", "量子加密",
-        "量子传感"
-    ],
+
+# ══════════════════════════════════════════════════════════
+# 赛道定义
+# ══════════════════════════════════════════════════════════
+
+TRACK_CONCEPTS: dict[str, list[str]] = {
+    "机器人":   ["机器人", "人形机器人", "工业机器人", "伺服电机", "减速器", "机器视觉"],
+    "低空经济": ["低空经济", "飞行汽车", "无人机", "通用航空", "eVTOL"],
+    "AI应用":   ["人工智能", "AI", "大模型", "ChatGPT", "算力", "光模块", "CPO", "AI芯片", "数据中心"],
+    "半导体":   ["半导体", "芯片", "集成电路", "光刻机", "先进封装", "EDA", "存储芯片"],
+    "新能源":   ["新能源", "光伏", "风电", "储能", "固态电池", "钠离子电池", "氢能源"],
+    "智能驾驶": ["智能驾驶", "自动驾驶", "车联网", "激光雷达", "毫米波雷达", "智能座舱"],
+    "军工":     ["军工", "国防", "航天", "航空发动机", "导弹", "卫星互联网", "北斗"],
+    "医药":     ["医药", "创新药", "CXO", "生物医药", "医疗器械", "中药", "疫苗"],
+}
+
+BAOSTOCK_INDUSTRY_MAP: dict[str, str] = {
+    # 机器人
+    "机械设备": "机器人", "自动化设备": "机器人", "通用设备": "机器人",
+    "专用设备": "机器人", "仪器仪表": "机器人",
+    # 半导体
+    "电子": "半导体", "半导体": "半导体", "元件": "半导体",
+    # AI应用
+    "计算机": "AI应用", "通信": "AI应用", "传媒": "AI应用",
+    "软件": "AI应用", "信息技术": "AI应用", "计算机应用": "AI应用",
+    "通信设备": "AI应用",
+    # 新能源
+    "电力设备": "新能源", "新能源": "新能源", "电气设备": "新能源",
+    # 智能驾驶
+    "汽车": "智能驾驶", "汽车零部件": "智能驾驶",
+    # 军工
+    "国防军工": "军工", "航天航空": "军工", "军工电子": "军工",
+    "航空装备": "军工", "航天装备": "军工", "地面兵装": "军工",
+    "船舶制造": "军工",
+    # 医药
+    "医药生物": "医药", "医药": "医药", "化学制药": "医药",
+    "生物制品": "医药", "医疗器械": "医药", "中药": "医药",
+    "医疗服务": "医药",
 }
 
 
-def fetch_hot_concepts() -> pd.DataFrame:
+MIN_MARKET_CAP = 100e8
+MIN_TURNOVER = 2e8
+MAX_PE_FOR_TRACK: dict[str, float] = {
+    "半导体": 150, "AI应用": 150, "机器人": 120,
+    "低空经济": 100, "新能源": 60, "智能驾驶": 100,
+    "军工": 100, "医药": 80,
+}
+DEFAULT_MAX_PE = 100
+
+
+# ══════════════════════════════════════════════════════════
+# 工具函数
+# ══════════════════════════════════════════════════════════
+
+def _retry(func, max_retries=3, wait=2.0):
+    for i in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            if i == max_retries - 1:
+                raise
+            time.sleep(wait * (2 ** i))
+
+
+def _to_baostock_code(code: str) -> str:
+    """将任意格式转为 baostock 9位代码: sh.600000 / sz.000001"""
+    code = code.strip()
+    if code.startswith(("sh.", "sz.", "bj.")):
+        return code
+    if len(code) == 6 and code.isdigit():
+        if code.startswith("6"):
+            return f"sh.{code}"
+        elif code.startswith(("0", "2", "3")):
+            return f"sz.{code}"
+        elif code.startswith(("4", "8")):
+            return f"bj.{code}"
+    return f"sh.{code}"
+
+
+def _from_baostock_code(bs_code: str) -> str:
+    """sh.600000 → 600000"""
+    return bs_code.replace("sh.", "").replace("sz.", "").replace("bj.", "").strip()
+
+
+# ══════════════════════════════════════════════════════════
+# Step 1 — 概念板块获取
+# ══════════════════════════════════════════════════════════
+
+def fetch_board_akshare() -> dict[str, list[str]]:
+    import akshare as ak
+    df = ak.stock_board_concept_name_em()
+    boards: dict[str, list[str]] = {}
+    for _, row in df.iterrows():
+        name = row.get("板块名称", "")
+        if not name:
+            continue
+        try:
+            cons = ak.stock_board_concept_cons_em(symbol=name)
+            codes = [c[:6] for c in cons["代码"].tolist()]
+            boards[name] = codes
+        except Exception:
+            continue
+    return boards
+
+
+def fetch_board_eastmoney() -> dict[str, list[str]]:
+    import requests
+    boards: dict[str, list[str]] = {}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://data.eastmoney.com/",
+    }
+    sess = requests.Session()
+    sess.headers.update(headers)
+    url_list = (
+        "https://push2.eastmoney.com/api/qt/clist/get"
+        "?pn=1&pz=5000&po=1&np=1&fltt=2&invt=2"
+        "&fs=m:90+t:3&fields=f12,f14"
+    )
+    resp = sess.get(url_list, timeout=30)
+    data = resp.json()
+    if not data.get("data") or not data["data"].get("diff"):
+        return boards
+    items = data["data"]["diff"]
+    for item in items:
+        name = item.get("f14", "")
+        code = item.get("f12", "")
+        if not code or not name:
+            continue
+        try:
+            c_url = (
+                f"https://push2.eastmoney.com/api/qt/clist/get"
+                f"?pn=1&pz=2000&po=1&np=1&fltt=2&invt=2"
+                f"&fs=b:{code}+f:!50&fields=f12"
+            )
+            c_resp = sess.get(c_url, timeout=30)
+            c_data = c_resp.json()
+            cons = []
+            if c_data.get("data") and c_data["data"].get("diff"):
+                cons = [d.get("f12", "") for d in c_data["data"]["diff"]]
+            boards[name] = cons
+        except Exception:
+            continue
+    return boards
+
+
+def fetch_board_baostock() -> dict[str, list[str]]:
     """
-    获取同花顺概念板块热度数据。
-    使用东财概念板块接口（免费、稳定）。
+    baostock query_stock_industry() 实际返回格式:
+      [update_date, code, code_name, industry, industry_classification]
+    例: ['2026-07-06', 'sh.600000', '浦发银行', 'J66货币金融服务', '证监会行业分类']
     """
+    import baostock as bs
+    bs.login()
+    rows = []
     try:
-        import akshare as ak
-        df = ak.stock_board_concept_name_em()
-        print(f"  [概念] 获取到 {len(df)} 个概念板块")
-        return df
-    except Exception as e:
-        print(f"  [概念] akshare 失败: {e}，尝试直连...")
-        # Fallback: 东财直连
-        url = "https://push2.eastmoney.com/api/qt/clist/get"
-        params = {
-            "pn": "1", "pz": "200",
-            "po": "1", "np": "1",
-            "fs": "m:90+t:3",
-            "fields": "f2,f3,f4,f12,f14",
-            "fid": "f3",
-        }
-        resp = requests.get(url, params=params, timeout=15)
-        data = resp.json()
-        if data.get("data") and data["data"].get("diff"):
-            rows = []
-            for item in data["data"]["diff"]:
-                rows.append({
-                    "代码": item.get("f12", ""),
-                    "板块名称": item.get("f14", ""),
-                    "涨跌幅": item.get("f3", 0),
-                })
-            df = pd.DataFrame(rows)
-            print(f"  [概念] 东财直连接口获取到 {len(df)} 个概念")
-            return df
-        raise RuntimeError("概念数据获取失败")
+        rs = bs.query_stock_industry()
+        while (rs.error_code == '0') & rs.next():
+            rows.append(rs.get_row_data())
+    finally:
+        bs.logout()
 
+    if rows:
+        print(f"  [baostock] 原始行数: {len(rows)}, 样本前3行:")
+        for r in rows[:3]:
+            print(f"    {r}")
 
-def match_sectors(concepts_df: pd.DataFrame) -> Dict[str, List[str]]:
-    """将概念板块匹配到NQP赛道。返回 {赛道名: [概念代码列表]}"""
-    sector_concepts: Dict[str, List[str]] = {sector: [] for sector in SECTOR_CONCEPT_MAP}
-    name_col = "板块名称" if "板块名称" in concepts_df.columns else "f14"
-    code_col = "代码" if "代码" in concepts_df.columns else "f12"
-
-    for _, row in concepts_df.iterrows():
-        concept_name = str(row.get(name_col, ""))
-        concept_code = str(row.get(code_col, ""))
-        for sector, keywords in SECTOR_CONCEPT_MAP.items():
-            for kw in keywords:
-                if kw in concept_name:
-                    sector_concepts[sector].append(concept_code)
-                    break
-
-    for sector in sector_concepts:
-        sector_concepts[sector] = list(set(sector_concepts[sector]))
-
-    return sector_concepts
-
-
-def fetch_concept_stocks(concept_codes: List[str]) -> pd.DataFrame:
-    """获取概念板块成分股。使用东财接口批量获取。"""
-    all_stocks = set()
-    for i, code in enumerate(concept_codes):
-        try:
-            import akshare as ak
-            df = ak.stock_board_concept_cons_em(symbol=code)
-            stocks = df["代码"].tolist()
-            all_stocks.update(stocks)
-            if (i + 1) % 5 == 0:
-                print(f"    已处理 {i+1}/{len(concept_codes)} 个概念板块...")
-            time.sleep(0.3)
-        except Exception as e:
-            print(f"    [WARN] 概念 {code} 获取失败: {e}")
+    boards: dict[str, list[str]] = {}
+    for row in rows:
+        if len(row) < 4:
             continue
-
-    print(f"    共获取 {len(all_stocks)} 只候选股")
-    return pd.DataFrame({"代码": sorted(all_stocks)})
-
-
-def fetch_spot_quotes(codes: List[str], batch_size: int = 80) -> pd.DataFrame:
-    """批量获取A股实时行情（腾讯财经接口）。"""
-    all_rows = []
-    total = len(codes)
-
-    for i in range(0, total, batch_size):
-        batch = codes[i:i + batch_size]
-        code_str = ",".join([f"sh{c}" if c.startswith("6") else f"sz{c}" for c in batch])
-        url = f"https://qt.gtimg.cn/q={code_str}"
-
-        try:
-            resp = requests.get(url, timeout=15)
-            resp.encoding = "gbk"
-            text = resp.text
-        except Exception as e:
-            print(f"    [WARN] 行情请求失败: {e}")
+        # v6 修复: row[1]=code, row[3]=industry (不是 row[0]!)
+        code = _from_baostock_code(row[1])
+        if not code or len(code) != 6 or not code.isdigit():
             continue
-
-        for line in text.strip().split("\n"):
-            line = line.strip()
-            if not line or '="' not in line:
-                continue
-            try:
-                data_str = line.split('="')[1].rstrip('";')
-                fields = data_str.split("~")
-                if len(fields) < 50:
-                    continue
-
-                code_raw = fields[2]
-                code = code_raw[2:] if len(code_raw) > 2 else code_raw
-                name = fields[1]
-                price = float(fields[3]) if fields[3] else 0.0
-                change_pct = float(fields[32]) if fields[32] else 0.0
-                pe = float(fields[39]) if fields[39] else 0.0
-                market_cap = float(fields[45]) if fields[45] else 0.0  # 总市值（亿）
-                volume = float(fields[6]) if fields[6] else 0.0  # 成交量（手）
-                turnover = float(fields[37]) if fields[37] else 0.0  # 成交额（万）
-
-                all_rows.append({
-                    "代码": code,
-                    "名称": name,
-                    "现价": price,
-                    "涨跌幅": change_pct,
-                    "PE": pe,
-                    "总市值_亿": market_cap,
-                    "成交量_手": volume,
-                    "成交额_万": turnover,
-                })
-            except (IndexError, ValueError):
-                continue
-
-        if (i + batch_size) % 200 == 0:
-            print(f"    已获取 {min(i + batch_size, total)}/{total} 行情...")
-        time.sleep(0.15)
-
-    df = pd.DataFrame(all_rows)
-    print(f"    成功获取 {len(df)} 只股票行情")
-    return df
-
-
-def apply_basic_filter(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    基础过滤：市值>100亿 + 成交额>2亿/日 + PE>0 + 现价>3
-    """
-    initial = len(df)
-    df = df[
-        (df["总市值_亿"] > 100) &
-        (df["成交额_万"] > 20000) &
-        (df["PE"] > 0) &
-        (df["现价"] > 3)
-    ].copy()
-    dropped = initial - len(df)
-    print(f"    基础过滤: {initial} → {len(df)} (剔除 {dropped})")
-    return df
-
-
-def fetch_kline_batch(codes: List[str], lookback: int = 250) -> Dict[str, pd.DataFrame]:
-    """批量获取日K线数据（腾讯财经接口）。"""
-    klines = {}
-    total = len(codes)
-
-    for i, code in enumerate(codes):
-        try:
-            prefix = "sh" if code.startswith("6") else "sz"
-            url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-            params = {
-                "param": f"{prefix}{code},day,,,{lookback}",
-                "_var": "kline_day"
-            }
-            resp = requests.get(url, params=params, timeout=10)
-            text = resp.text
-
-            json_str = text[text.find("{"):text.rfind("}") + 1]
-            data = json.loads(json_str)
-
-            kline_data = data.get("data", {}).get(f"{prefix}{code}", {}).get("day", [])
-            if not kline_data:
-                kline_data = data.get("data", {}).get(f"{prefix}{code}", {}).get("qfqday", [])
-
-            if kline_data and len(kline_data) >= 200:
-                rows = []
-                for item in kline_data:
-                    rows.append({
-                        "date": item[0],
-                        "open": float(item[1]),
-                        "close": float(item[2]),
-                        "high": float(item[3]),
-                        "low": float(item[4]),
-                        "volume": float(item[5]),
-                    })
-                df = pd.DataFrame(rows)
-                df["date"] = pd.to_datetime(df["date"])
-                df = df.set_index("date").sort_index()
-                klines[code] = df
-
-        except Exception:
+        ind = (row[3] or row[2] or "").strip()
+        if not ind:
             continue
+        boards.setdefault(ind, []).append(code)
 
-        if (i + 1) % 50 == 0:
-            print(f"    K线获取 {i+1}/{total}，已成功 {len(klines)} 只...")
-        time.sleep(0.1)
+    print(f"  [baostock] 行业数: {len(boards)}, 总股票数: {sum(len(v) for v in boards.values())}")
+    for ind_name in sorted(boards.keys())[:8]:
+        print(f"    {ind_name}: {boards[ind_name][:3]}... ({len(boards[ind_name])}只)")
 
-    print(f"    K线获取完成: {len(klines)}/{total} 只有效K线数据")
-    return klines
-
-
-def compute_ma200_score(
-    klines: Dict[str, pd.DataFrame], quotes_df: pd.DataFrame
-) -> pd.DataFrame:
-    """计算MA200乖离 + 趋势评分，只保留 close > MA200 的标的。"""
-    results = []
-    for code, kdf in klines.items():
-        try:
-            if len(kdf) < 200:
-                continue
-
-            kdf["MA200"] = kdf["close"].rolling(200).mean()
-            kdf["MA20"] = kdf["close"].rolling(20).mean()
-
-            latest_close = kdf["close"].iloc[-1]
-            ma200 = kdf["MA200"].iloc[-1]
-            ma20 = kdf["MA20"].iloc[-1]
-
-            if pd.isna(ma200) or ma200 <= 0:
-                continue
-
-            deviation = (latest_close / ma200 - 1) * 100
-
-            # 过滤：必须在MA200上方（允许-3%以内）
-            if deviation <= -3:
-                continue
-
-            # MA20斜率（最近10日）
-            idx10 = min(11, len(kdf) - 1)
-            ma20_10d_ago = kdf["MA20"].iloc[-idx10] if len(kdf) >= idx10 + 1 else kdf["MA20"].iloc[0]
-            ma20_slope = (ma20 / ma20_10d_ago - 1) * 100 if pd.notna(ma20_10d_ago) and ma20_10d_ago > 0 else 0
-
-            # 年化收益
-            returns = kdf["close"].pct_change().dropna()
-            ann_return = returns.mean() * 252 * 100 if len(returns) > 0 else 0
-
-            # 波动率
-            volatility = returns.std() * np.sqrt(252) * 100 if len(returns) > 0 else 100
-
-            # 最大回撤
-            cummax = kdf["close"].expanding().max()
-            drawdown = (kdf["close"] / cummax - 1) * 100
-            max_dd = drawdown.min()
-
-            # 综合趋势评分 (0-100)
-            dev_score = max(0, min(25, 25 - abs(deviation - 10) * 2))
-            slope_score = max(0, min(25, ma20_slope * 5 if ma20_slope > 0 else 0))
-            ret_score = max(0, min(25, ann_return / 2))
-            dd_score = max(0, min(25, (20 + max_dd) * 1.25)) if max_dd > -20 else 25
-
-            trend_score = dev_score + slope_score + ret_score + dd_score
-
-            # 成交量评分
-            quote_row = quotes_df[quotes_df["代码"] == code]
-            turnover = quote_row["成交额_万"].values[0] if len(quote_row) > 0 else 0
-            vol_score = min(25, turnover / 20000 * 5)
-
-            total_score = trend_score * 0.70 + vol_score * 0.30
-
-            results.append({
-                "代码": code,
-                "名称": quote_row["名称"].values[0] if len(quote_row) > 0 else code,
-                "现价": latest_close,
-                "PE": quote_row["PE"].values[0] if len(quote_row) > 0 else 0,
-                "总市值_亿": quote_row["总市值_亿"].values[0] if len(quote_row) > 0 else 0,
-                "MA200乖离": round(deviation, 2),
-                "MA20斜率": round(ma20_slope, 2),
-                "年化收益": round(ann_return, 2),
-                "最大回撤": round(max_dd, 2),
-                "趋势分": round(trend_score, 1),
-                "成交量分": round(vol_score, 1),
-                "综合评分": round(total_score, 1),
-            })
-        except Exception:
-            continue
-
-    df = pd.DataFrame(results)
-    if len(df) > 0:
-        df = df.sort_values("综合评分", ascending=False).reset_index(drop=True)
-    print(f"    MA200过滤后: {len(df)} 只标的")
-    return df
+    return boards
 
 
-def assign_sectors(scored_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    将标的分配到NQP赛道。
-    基于个股所属概念板块自动识别，优先匹配最具体的赛道。
-    """
-    sector_col = []
-
-    for idx, row in scored_df.iterrows():
-        code = row["代码"]
-        assigned = "其他"
-        try:
-            # 通过东财概念查询
-            url = "https://push2.eastmoney.com/api/qt/slist/get"
-            params = {
-                "spt": "1", "fltt": "2",
-                "invt": "2",
-                "fields": "f3,f12,f14",
-                "fs": f"m:90+t:3+f:!50,code:{code}",
-                "pn": "1", "pz": "10",
-            }
-            resp = requests.get(url, params=params, timeout=10)
-            data = resp.json()
-            concepts_list = []
-            if data.get("data") and data["data"].get("diff"):
-                for item in data["data"]["diff"]:
-                    concepts_list.append(item.get("f14", ""))
-
-            matched_sectors = set()
-            for concept in concepts_list:
-                for sector, keywords in SECTOR_CONCEPT_MAP.items():
-                    for kw in keywords:
-                        if kw in concept:
-                            matched_sectors.add(sector)
-                            break
-                    if sector in matched_sectors:
-                        break
-
-            if matched_sectors:
-                # 选匹配关键词最多的赛道
-                best_sector = max(
-                    matched_sectors,
-                    key=lambda s: sum(
-                        1 for kw in SECTOR_CONCEPT_MAP[s] if any(kw in c for c in concepts_list)
-                    )
-                )
-                assigned = best_sector
-        except Exception:
-            pass
-        sector_col.append(assigned)
-
-    scored_df["赛道"] = sector_col
-    return scored_df
-
-
-def select_top_per_sector(scored_df: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
-    """每赛道取Top N，去重后返回最终池。"""
-    selected = []
-    for sector in SECTOR_CONCEPT_MAP:
-        sector_df = scored_df[scored_df["赛道"] == sector]
-        if len(sector_df) == 0:
-            continue
-        top = sector_df.nlargest(top_n, "综合评分")
-        selected.append(top)
-
-    if not selected:
-        return pd.DataFrame()
-
-    result = pd.concat(selected, ignore_index=True)
-    result = result.drop_duplicates(subset="代码")
-    sector_order = {s: i for i, s in enumerate(SECTOR_CONCEPT_MAP)}
-    result["赛道序"] = result["赛道"].map(sector_order)
-    result = result.sort_values(["赛道序", "综合评分"], ascending=[True, False])
-    result = result.drop(columns=["赛道序"])
-    return result
-
-
-def load_existing_pool() -> Dict[str, Dict]:
-    """加载当前池（从 pool_result.json）。"""
-    pool_path = Path(__file__).parent / "pool_result.json"
-    if pool_path.exists():
-        with open(pool_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return {s["代码"]: s for s in data.get("pool", [])}
+def load_board_cache() -> dict[str, list[str]]:
+    """加载本地缓存，兼容 dict 和 list 格式"""
+    if not CACHE_FILE.exists():
+        return {}
+    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    # 兼容: 缓存可能是 {"boards": {...}} 或直接的 list → dict
+    if isinstance(data, dict):
+        # 如果有 boards 键，取它
+        if "boards" in data:
+            boards = data["boards"]
+            if isinstance(boards, dict):
+                return boards
+            if isinstance(boards, list):
+                return _convert_board_list(boards)
+        # 否则当作 {行业: [代码]}
+        return data
+    if isinstance(data, list):
+        return _convert_board_list(data)
     return {}
 
 
-def compute_diff(new_pool: pd.DataFrame, old_pool: Dict[str, Dict]) -> Dict:
-    """计算新旧池差异。"""
-    new_codes = set(new_pool["代码"].tolist())
-    old_codes = set(old_pool.keys())
+def _convert_board_list(data: list) -> dict[str, list[str]]:
+    """list 格式 → dict 格式"""
+    boards: dict[str, list[str]] = {}
+    for item in data:
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("industry") or ""
+            codes = item.get("codes") or item.get("stocks") or []
+            if name and codes:
+                boards[name] = codes
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            boards[str(item[0])] = item[1] if isinstance(item[1], list) else [item[1]]
+    return boards
 
-    added = new_codes - old_codes
-    removed = old_codes - new_codes
-    kept = new_codes & old_codes
 
-    added_stocks = []
-    for code in added:
-        row = new_pool[new_pool["代码"] == code].iloc[0]
-        added_stocks.append({
-            "代码": code,
-            "名称": row["名称"],
-            "赛道": row["赛道"],
-            "综合评分": row["综合评分"],
-        })
+def save_board_cache(boards: dict[str, list[str]]):
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"boards": boards, "updated_at": datetime.now().isoformat()}, f, ensure_ascii=False)
 
-    removed_stocks = []
-    for code in removed:
-        old = old_pool[code]
-        removed_stocks.append({
-            "代码": code,
-            "名称": old.get("名称", code),
-            "赛道": old.get("赛道", "未知"),
-        })
 
-    return {
-        "new_total": len(new_pool),
-        "old_total": len(old_pool),
-        "added": added_stocks,
-        "removed": removed_stocks,
-        "kept": len(kept),
+# ══════════════════════════════════════════════════════════
+# Step 2 — 赛道匹配
+# ══════════════════════════════════════════════════════════
+
+def match_tracks_concept(boards: dict[str, list[str]]) -> dict[str, set[str]]:
+    tracks: dict[str, set[str]] = {t: set() for t in TRACK_CONCEPTS}
+    for bname, codes in boards.items():
+        for track, keywords in TRACK_CONCEPTS.items():
+            if any(kw in bname for kw in keywords):
+                tracks[track].update(codes)
+    return tracks
+
+
+def match_tracks_baostock(boards: dict[str, list[str]]) -> dict[str, set[str]]:
+    tracks: dict[str, set[str]] = {t: set() for t in TRACK_CONCEPTS}
+    matched_industries: dict[str, list[str]] = {t: [] for t in TRACK_CONCEPTS}
+    unmatched: list[str] = []
+
+    for ind, codes in boards.items():
+        matched = False
+        # 第一层: 精确匹配
+        for industry_key, track in BAOSTOCK_INDUSTRY_MAP.items():
+            if industry_key == ind or industry_key in ind:
+                tracks[track].update(codes)
+                matched_industries[track].append(ind)
+                matched = True
+                break
+        # 第二层: 模糊匹配
+        if not matched:
+            for industry_key, track in BAOSTOCK_INDUSTRY_MAP.items():
+                if ind in industry_key or any(kw in ind for kw in industry_key.split()):
+                    tracks[track].update(codes)
+                    matched_industries[track].append(ind)
+                    matched = True
+                    break
+        if not matched:
+            unmatched.append(ind)
+
+    for t in TRACK_CONCEPTS:
+        inds = matched_industries.get(t, [])
+        if inds:
+            print(f"  [赛道] {t}: {len(inds)} 个行业 → {len(tracks[t])} 只成分股")
+        else:
+            print(f"  [赛道] {t}: 0 个行业 → 0 只成分股")
+
+    if unmatched:
+        print(f"  [未匹配] {len(unmatched)} 个行业: {unmatched[:15]}...")
+
+    return tracks
+
+
+# ══════════════════════════════════════════════════════════
+# Step 3 — 成分股扫描 + 基础过滤
+# ══════════════════════════════════════════════════════════
+
+def _fetch_fundamentals_eastmoney(codes: list[str]) -> dict[str, dict]:
+    """东财 push2 个股 API"""
+    import requests
+    results: dict[str, dict] = {}
+    for i in range(0, len(codes), 200):
+        batch = codes[i:i+200]
+        secids = ",".join(f"1.{c}" if c.startswith("6") else f"0.{c}" for c in batch)
+        url = (
+            f"https://push2.eastmoney.com/api/qt/ulist.np/get"
+            f"?fltt=2&invt=2&fields=f2,f12,f14,f20,f6,f15"
+            f"&secids={secids}"
+        )
+        try:
+            resp = requests.get(url, timeout=30)
+            data = resp.json()
+            if data.get("data") and data["data"].get("diff"):
+                for item in data["data"]["diff"]:
+                    code = item.get("f12", "")
+                    results[code] = {
+                        "price": float(item.get("f2") or 0),
+                        "market_cap": float(item.get("f20") or 0),
+                        "turnover_rate": float(item.get("f6") or 0),
+                        "amount": float(item.get("f15") or 0),
+                    }
+        except Exception as e:
+            print(f"    [东财] 批次 {i} 失败: {e}")
+    return results
+
+
+def _fetch_fundamentals_baostock(codes: list[str], target_date: str) -> dict[str, dict]:
+    """baostock K线取 PE/换手/成交额"""
+    import baostock as bs
+    bs.login()
+    results: dict[str, dict] = {}
+    start = (datetime.strptime(target_date, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y-%m-%d")
+    try:
+        for code in codes:
+            bs_code = _to_baostock_code(code)
+            try:
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,close,peTTM,turn,volume",
+                    start_date=start, end_date=target_date,
+                    frequency="d", adjustflag="2"
+                )
+                rows = []
+                while (rs.error_code == '0') & rs.next():
+                    rows.append(rs.get_row_data())
+                if rows:
+                    # 取最近一条有 PE 的记录
+                    for r in reversed(rows):
+                        pe = float(r[2]) if r[2] and r[2] != '0' and r[2] != '' else 0
+                        close = float(r[1]) if r[1] else 0
+                        turn = float(r[3]) if r[3] else 0
+                        vol = float(r[4]) if r[4] else 0
+                        amount = vol * close * 100 if close and vol else 0  # 估计成交额
+                        if close:
+                            results[code] = {
+                                "price": close,
+                                "market_cap": 0,  # baostock 无市值
+                                "turnover_rate": turn,
+                                "amount": amount,
+                                "pe": pe,
+                            }
+                            break
+            except Exception:
+                continue
+    finally:
+        bs.logout()
+    return results
+
+
+def basic_filter(
+    track_stocks: dict[str, set[str]],
+    target_date: str
+) -> dict[str, set[str]]:
+    """基础过滤: 市值 > 100亿, 成交额 > 2亿, PE > 0 且 < 赛道上限"""
+    all_codes = sorted(set().union(*track_stocks.values()))
+    if not all_codes:
+        return {t: set() for t in track_stocks}
+
+    print(f"  [基本面] 尝试东财 API ({len(all_codes)} 只)...")
+    fund = _fetch_fundamentals_eastmoney(all_codes)
+
+    if not fund:
+        print(f"  [基本面] 尝试 baostock ({len(all_codes)} 只)...")
+        fund = _fetch_fundamentals_baostock(all_codes, target_date)
+
+    print(f"  [基本面] 总共获取 {len(fund)} 只")
+
+    filtered: dict[str, set[str]] = {t: set() for t in track_stocks}
+    for track in track_stocks:
+        max_pe = MAX_PE_FOR_TRACK.get(track, DEFAULT_MAX_PE)
+        for code in track_stocks[track]:
+            info = fund.get(code)
+            if not info:
+                continue
+            mc = info.get("market_cap", 0)
+            amt = info.get("amount", 0)
+            pe = info.get("pe", 0)
+            # 市值: baostock 无市值时跳过该条件
+            if mc and mc < MIN_MARKET_CAP:
+                continue
+            if amt and amt < MIN_TURNOVER:
+                continue
+            if pe and (pe <= 0 or pe > max_pe):
+                continue
+            filtered[track].add(code)
+
+        print(f"  [扫描] {track}: {len(filtered[track])} 只通过基础过滤")
+
+    return filtered
+
+
+# ══════════════════════════════════════════════════════════
+# Step 4 — MA200 技术过滤
+# ══════════════════════════════════════════════════════════
+
+def ma200_filter(
+    track_stocks: dict[str, set[str]],
+    target_date: str
+) -> dict[str, set[str]]:
+    """MA200 上方过滤: 收盘价 > MA200"""
+    all_codes = sorted(set().union(*track_stocks.values()))
+    if not all_codes:
+        return {t: set() for t in track_stocks}
+
+    print(f"  [MA200] 处理 {len(all_codes)} 只标的...")
+    import baostock as bs
+    bs.login()
+    # 需要足够长的历史算MA200
+    start = (datetime.strptime(target_date, "%Y-%m-%d") - timedelta(days=400)).strftime("%Y-%m-%d")
+    passed: set[str] = set()
+    failed: list[str] = []
+    try:
+        for code in all_codes:
+            bs_code = _to_baostock_code(code)
+            try:
+                rs = bs.query_history_k_data_plus(
+                    bs_code, "date,close", start_date=start, end_date=target_date,
+                    frequency="d", adjustflag="2"
+                )
+                closes = []
+                while (rs.error_code == '0') & rs.next():
+                    row = rs.get_row_data()
+                    if row[1]:
+                        closes.append(float(row[1]))
+                if len(closes) >= 200:
+                    ma200 = sum(closes[-200:]) / 200
+                    if closes[-1] > ma200:
+                        passed.add(code)
+                failed.append(code)
+            except Exception:
+                failed.append(code)
+    finally:
+        bs.logout()
+
+    print(f"  [MA200] K线获取: {len(passed)} 只成功, {len(failed)} 只失败")
+
+    result: dict[str, set[str]] = {}
+    for track, codes in track_stocks.items():
+        result[track] = codes & passed
+        print(f"  [MA200] {track}: {len(result[track])} 只通过（共{len(codes)}只）")
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════
+# Step 5-7 — 评分 + Top5 + 输出
+# ══════════════════════════════════════════════════════════
+
+def score_stocks(
+    track_stocks: dict[str, set[str]],
+    target_date: str
+) -> dict[str, list[tuple[str, float]]]:
+    """综合评分: 趋势分 + 量分"""
+    all_codes = sorted(set().union(*track_stocks.values()))
+    if not all_codes:
+        return {}
+
+    import baostock as bs
+    bs.login()
+    start = (datetime.strptime(target_date, "%Y-%m-%d") - timedelta(days=400)).strftime("%Y-%m-%d")
+    scores: dict[str, float] = {}
+    try:
+        for code in all_codes:
+            bs_code = _to_baostock_code(code)
+            try:
+                rs = bs.query_history_k_data_plus(
+                    bs_code, "date,close,volume,amount",
+                    start_date=start, end_date=target_date,
+                    frequency="d", adjustflag="2"
+                )
+                closes = []
+                amounts = []
+                while (rs.error_code == '0') & rs.next():
+                    row = rs.get_row_data()
+                    if row[1]:
+                        closes.append(float(row[1]))
+                    if row[3]:
+                        amounts.append(float(row[3]))
+                if len(closes) < 20:
+                    continue
+                # MA200 乖离率
+                ma200 = sum(closes[-200:]) / 200 if len(closes) >= 200 else sum(closes[-20:]) / 20
+                closest = closes[-1]
+                deviation_pct = (closest - ma200) / ma200 * 100
+                # 趋势强度: 近20日收益 / 波动率
+                ret_20 = (closes[-1] / closes[-20] - 1) if len(closes) >= 20 else 0
+                volatility = (max(closes[-20:]) - min(closes[-20:])) / closes[-20] if len(closes) >= 20 else 1
+                trend_score = ret_20 / volatility * 100 if volatility > 0 else 0
+                # 量分: 近5日相对20日均量
+                avg_vol_20 = sum(amounts[-20:]) / 20 if len(amounts) >= 20 else amounts[-1]
+                avg_vol_5 = sum(amounts[-5:]) / 5 if len(amounts) >= 5 else amounts[-1]
+                vol_ratio = avg_vol_5 / avg_vol_20 if avg_vol_20 > 0 else 1
+                # 综合分
+                s = deviation_pct * 0.3 + trend_score * 0.4 + min(vol_ratio, 2) * 10 * 0.3
+                scores[code] = round(s, 2)
+            except Exception:
+                continue
+    finally:
+        bs.logout()
+
+    result: dict[str, list[tuple[str, float]]] = {}
+    for track, codes in track_stocks.items():
+        ranked = sorted(
+            [(c, scores.get(c, 0)) for c in codes if c in scores],
+            key=lambda x: x[1], reverse=True
+        )
+        result[track] = ranked
+        top5_str = ", ".join(f"{c}({s:.1f})" for c, s in ranked[:5])
+        print(f"  [Top5] {track}: {top5_str}" if top5_str else f"  [Top5] {track}: (无)")
+    return result
+
+
+def run(dry_run: bool = False, target_date: Optional[str] = None):
+    if target_date is None:
+        target_date = date.today().isoformat()
+
+    print("=" * 60)
+    print(f"NQP V3.3 月度池轮换 v6 — {target_date}")
+    print("=" * 60)
+
+    # ──── Step 1: 获取概念板块 ────
+    print("\n[1/7] 获取概念板块（多源降级）...")
+    boards: dict[str, list[str]] = {}
+    source = None
+
+    # 1. akshare
+    print("  [概念] 尝试 akshare...")
+    try:
+        boards = _retry(fetch_board_akshare)
+        source = "akshare"
+        print(f"  [概念] akshare 成功, {len(boards)} 个板块")
+    except Exception as e:
+        print(f"  [概念] akshare 失败: {e}")
+
+    # 2. eastmoney
+    if not boards:
+        print("  [概念] 尝试 eastmoney...")
+        try:
+            boards = _retry(fetch_board_eastmoney)
+            source = "eastmoney"
+            print(f"  [概念] eastmoney 成功, {len(boards)} 个板块")
+        except Exception as e:
+            print(f"  [概念] eastmoney 失败: {e}")
+
+    # 3. baostock
+    if not boards:
+        print("  [概念] 尝试 baostock...")
+        try:
+            boards = _retry(fetch_board_baostock)
+            source = "baostock"
+        except Exception as e:
+            print(f"  [概念] baostock 失败: {e}")
+
+    # 4. 缓存
+    if not boards:
+        print("  [概念] 使用本地缓存...")
+        boards = load_board_cache()
+        source = "cache"
+        if boards:
+            print(f"  [概念] 缓存加载成功, 板块/行业数: {len(boards)}")
+
+    if not boards:
+        print("  [概念] ❌ 所有数据源均失败，退出")
+        sys.exit(1)
+
+    print(f"  [概念] 成功, 数据源: {source}, 板块/行业数: {len(boards)}")
+
+    # ──── Step 2: 赛道匹配 ────
+    print("\n[2/7] 赛道匹配（数据源: {})...".format(source))
+    if source == "baostock" or source == "cache":
+        # 检查是否是 baostock 行业格式 (dict of industry→codes)
+        # v6 修复: 兼容 list 格式的 boards（缓存可能为 list）
+        if isinstance(boards, dict) and boards:
+            tracks = match_tracks_baostock(boards)
+        else:
+            print("  [赛道] boards 非 dict, 回退概念匹配")
+            tracks = match_tracks_concept(boards if isinstance(boards, dict) else {})
+    else:
+        tracks = match_tracks_concept(boards)
+
+    total = len(set().union(*tracks.values()))
+    print(f"  [赛道] 总计: {total} 只成分股（去重）")
+
+    # ──── Step 3: 成分股扫描 + 基础过滤 ────
+    print("\n[3/7] 成分股扫描...")
+    filtered = basic_filter(tracks, target_date)
+
+    # ──── Step 4: MA200 技术过滤 ────
+    print("\n[4/7] MA200 技术过滤...")
+    ma200_passed = ma200_filter(filtered, target_date)
+
+    # ──── Step 5-6: 评分 + Top5 ────
+    print("\n[5/7] 赛道分配 & 评分...")
+    print("\n[6/7] Top5 选择...")
+    ranked = score_stocks(ma200_passed, target_date)
+
+    # ──── Step 7: 输出 ────
+    print("\n[7/7] 输出结果...")
+    top5_flat: list[str] = []
+    for t in TRACK_CONCEPTS:
+        top5_flat.extend(c for c, _ in ranked.get(t, [])[:5])
+
+    # 对比上次池
+    old_pool: list[str] = []
+    if RESULT_FILE.exists():
+        try:
+            with open(RESULT_FILE, "r", encoding="utf-8") as f:
+                old = json.load(f)
+                old_pool = old.get("stocks", [])
+        except Exception:
+            pass
+
+    added = [c for c in top5_flat if c not in old_pool]
+    removed = [c for c in old_pool if c not in top5_flat]
+
+    result = {
+        "generated_at": datetime.now().isoformat(),
+        "version": "v3.3",
+        "total_stocks": len(top5_flat),
+        "stocks": top5_flat,
+        "changes": {
+            "added": added,
+            "removed": removed,
+            "added_count": len(added),
+            "removed_count": len(removed),
+        }
     }
 
+    print(f"  总池: {len(top5_flat)} 只")
+    print(f"  新增: {len(added)} 只 {added if added else ''}")
+    print(f"  移除: {len(removed)} 只 {removed if removed else ''}")
+    print()
 
-def format_pool_for_pipeline(pool_df: pd.DataFrame) -> str:
-    """将池格式化为 daily_pipeline.py 可用的 Python 代码片段。"""
-    lines = ["# NQP_POOL: 自动生成于 " + datetime.now().strftime("%Y-%m-%d %H:%M")]
-
-    for sector in SECTOR_CONCEPT_MAP:
-        sector_stocks = pool_df[pool_df["赛道"] == sector]
-        if len(sector_stocks) == 0:
-            continue
-        lines.append(f"    # {sector} ({len(sector_stocks)}只)")
-        for _, row in sector_stocks.iterrows():
-            lines.append(f'    ("{row["代码"]}", "{row["名称"]}", "{sector}"),')
-
-    return "\n".join(lines)
-
-
-def print_summary(final_pool: pd.DataFrame, diff: Dict, dry_run: bool):
-    """打印轮换摘要。"""
-    print(f"\n{'='*60}")
-    print(f"🏆 最终交易池 ({len(final_pool)} 只)")
-    print(f"{'='*60}")
-
-    for sector in SECTOR_CONCEPT_MAP:
-        sector_stocks = final_pool[final_pool["赛道"] == sector]
-        if len(sector_stocks) == 0:
-            continue
-        print(f"\n## {sector} ({len(sector_stocks)}只)")
-        for _, row in sector_stocks.iterrows():
-            print(f"  {row['代码']} {row['名称']:8s}  "
-                  f"评分{row['综合评分']:5.1f}  "
-                  f"乖离{row['MA200乖离']:+6.1f}%  "
-                  f"PE{row['PE']:5.0f}")
-
-    if diff.get("old_total", 0) > 0:
-        print(f"\n{'='*60}")
-        print(f"📊 池变动 ({diff['old_total']} → {diff['new_total']})")
-        print(f"{'='*60}")
-        if diff["added"]:
-            print(f"\n🟢 纳入 ({len(diff['added'])}只):")
-            for s in diff["added"]:
-                print(f"  + {s['代码']} {s['名称']:8s} [{s['赛道']}] 评分{s['综合评分']:.1f}")
-        if diff["removed"]:
-            print(f"\n🔴 移出 ({len(diff['removed'])}只):")
-            for s in diff["removed"]:
-                print(f"  - {s['代码']} {s['名称']:8s} [{s['赛道']}]")
-        if not diff["added"] and not diff["removed"]:
-            print("\n  ✅ 池无变化")
+    if dry_run:
+        print("🔍 [DRY RUN] 预览模式，不写入文件")
     else:
-        print(f"\n  (首次运行，无旧池对比)")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="NQP V3.3 月度池轮换")
-    parser.add_argument("--dry-run", action="store_true", help="预览模式，不写文件")
-    parser.add_argument("--date", default=None, help="目标日期 YYYY-MM-DD")
-    args = parser.parse_args()
-
-    today = args.date or datetime.now().strftime("%Y-%m-%d")
-    print(f"\n{'='*60}")
-    print(f"NQP V3.3 月度池轮换 — {today}")
-    print(f"{'='*60}\n")
-
-    # Step 1: 获取概念板块
-    print("[1/7] 获取概念板块...")
-    try:
-        concepts_df = fetch_hot_concepts()
-    except Exception as e:
-        print(f"  [FATAL] 概念获取失败: {e}")
-        print("  池轮换中止，保持现有池不变。")
-        return 1
-
-    # Step 2: 匹配NQP赛道
-    print("\n[2/7] 匹配NQP赛道...")
-    sector_concepts = match_sectors(concepts_df)
-    for sector, codes in sector_concepts.items():
-        print(f"  {sector}: {len(codes)} 个概念板块")
-
-    all_concept_codes = []
-    for codes in sector_concepts.values():
-        all_concept_codes.extend(codes)
-    all_concept_codes = list(set(all_concept_codes))
-    if not all_concept_codes:
-        print("  [FATAL] 未匹配到任何概念板块！")
-        return 1
-
-    # Step 3: 获取成分股（限制前30个概念，避免API超时）
-    print(f"\n[3/7] 获取成分股（前30个概念板块）...")
-    stocks_df = fetch_concept_stocks(all_concept_codes[:30])
-    candidate_codes = stocks_df["代码"].tolist()
-    print(f"  候选标的: {len(candidate_codes)} 只")
-
-    if len(candidate_codes) == 0:
-        print("  [FATAL] 未获取到任何候选股！")
-        return 1
-
-    # Step 4: 获取行情 + 基础过滤
-    print(f"\n[4/7] 获取行情 + 基础过滤...")
-    quotes_df = fetch_spot_quotes(candidate_codes)
-    quotes_df = apply_basic_filter(quotes_df)
-    filtered_codes = quotes_df["代码"].tolist()
-
-    if len(filtered_codes) == 0:
-        print("  [FATAL] 基础过滤后无标的！")
-        return 1
-
-    # Step 5: K线 + MA200过滤
-    print(f"\n[5/7] K线 + MA200过滤 ({len(filtered_codes)} 只)...")
-    klines = fetch_kline_batch(filtered_codes)
-    scored_df = compute_ma200_score(klines, quotes_df)
-
-    if len(scored_df) == 0:
-        print("\n[WARN] 无标的通过MA200过滤！使用现有池。")
-        return 1
-
-    # Step 6: 赛道分配
-    print("\n[6/7] 分配赛道...")
-    scored_df = assign_sectors(scored_df)
-
-    # Step 7: 选择最终池
-    print("\n[7/7] 选择最终池...")
-    final_pool = select_top_per_sector(scored_df, top_n=5)
-
-    if len(final_pool) == 0:
-        print("  [FATAL] 无标的可纳入最终池！")
-        return 1
-
-    # 差异对比
-    old_pool = load_existing_pool()
-    diff = compute_diff(final_pool, old_pool)
-
-    # 输出摘要
-    print_summary(final_pool, diff, args.dry_run)
-
-    # 保存
-    if not args.dry_run:
-        output_path = Path(__file__).parent / "pool_result.json"
-        pool_data = []
-        for _, row in final_pool.iterrows():
-            pool_data.append({
-                "代码": row["代码"],
-                "名称": row["名称"],
-                "赛道": row["赛道"],
-                "现价": row["现价"],
-                "PE": row["PE"],
-                "总市值_亿": row["总市值_亿"],
-                "MA200乖离": row["MA200乖离"],
-                "综合评分": row["综合评分"],
-                "趋势分": row["趋势分"],
-            })
-
-        result = {
-            "generated_at": today,
-            "total": len(final_pool),
-            "pool": pool_data,
-            "diff": diff,
-            "pool_code": format_pool_for_pipeline(final_pool),
-        }
-
-        with open(output_path, "w", encoding="utf-8") as f:
+        RESULT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(RESULT_FILE, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
-        print(f"\n✅ 池已保存到: {output_path}")
-    else:
-        print(f"\n🔍 [预览模式] 未写入文件")
+        print("✅ 已写入 pool_result.json")
+        # 同时更新缓存
+        save_board_cache(boards)
 
-    return 0
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description="NQP V3.3 月度池轮换")
+    parser.add_argument("--dry-run", action="store_true", help="预览模式")
+    parser.add_argument("--date", type=str, default=None, help="目标日期 YYYY-MM-DD")
+    args = parser.parse_args()
+    run(dry_run=args.dry_run, target_date=args.date)
