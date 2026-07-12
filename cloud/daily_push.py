@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""
-NQP V3.3 每日趋势追踪完整报告 — v9
-修复: baostock 改为一次 login 全部提取（根治连接状态混乱导致 0 只指标问题）
-10章报告 + 池变动追踪 + 方糖推送摘要
+"""NQP V3.3 每日趋势追踪完整报告 — v11
+
+信号体系: P1-P5 买入 + S1-S5 卖出（自包含，独立于策略配置）
+策略关系: 本脚本使用自有的硬编码信号逻辑，与 agent/strategies/trend-matrix-v3.json
+         中定义的「趋势策略矩阵」(BearFlat+DD20 / Pure MA200 / MA200+VolGate /
+         MA200+Confirm3) 是两套独立系统。trend-matrix 策略通过 agent/src/scheduler.py
+         的定时扫描链路运行，不经过本脚本的方糖推送通道。
+
+数据源: 腾讯 API (主) → baostock (兜底)
+推送: 方糖 ServerChan → 微信（含名称/代码/建议价格/原因）
+修复(v11): 腾讯优先 + 推荐价格 + 名称缓存 + 推送格式重写
 """
 
 import os, sys, json, re, time, traceback
@@ -11,17 +18,37 @@ from datetime import datetime, date, timedelta
 from collections import defaultdict
 import numpy as np
 import pandas as pd
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # 0. 配置
 # ============================================================
-FANGTANG_KEY = os.environ.get("FANGTANG_KEY", "SCT376111TEagAv1cUxT0v3ssNb39UhzNp")
+FANGTANG_KEY = os.environ.get("FANGTANG_KEY", "")
 DRY_RUN = "--dry-run" in sys.argv
 TODAY = date.today()
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CLOUD_DIR = os.path.join(SCRIPT_DIR, "cloud") if os.path.isdir(os.path.join(SCRIPT_DIR, "cloud")) else SCRIPT_DIR
 
 NAME_CACHE = {}
+
+# ---- 重试工具 ----
+def retry(func, max_retries=3, wait=2.0):
+    """网络调用重试，指数退避"""
+    for i in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            if i == max_retries - 1:
+                raise
+            logger.info(f"    ⚠️ 第{i+1}次失败({e})，{wait*(2**i):.0f}s后重试...")
+            time.sleep(wait * (2 ** i))
 DEFAULT_POOL = [
     "688561.SH", "300454.SZ", "688111.SH", "300033.SZ", "688012.SH",
     "002920.SZ", "002906.SZ", "300024.SZ", "688122.SH", "600765.SH",
@@ -31,10 +58,34 @@ DEFAULT_POOL = [
 
 
 # ============================================================
-# 1. 获取股票名称（baostock）
+# 1. 获取股票名称（baostock + 本地缓存兜底）
 # ============================================================
+NAME_CACHE_FILE = os.path.join(SCRIPT_DIR, ".name_cache.json")
+
+def _load_name_cache():
+    """加载本地缓存的股票名称"""
+    if os.path.exists(NAME_CACHE_FILE):
+        try:
+            with open(NAME_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def _save_name_cache(cache):
+    """保存股票名称到本地缓存"""
+    try:
+        with open(NAME_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except:
+        pass
+
 def fetch_names(codes):
     global NAME_CACHE
+    # 先从本地缓存加载
+    if not NAME_CACHE:
+        NAME_CACHE = _load_name_cache()
+
     missing = [c for c in codes if c not in NAME_CACHE]
     if not missing:
         return NAME_CACHE
@@ -42,6 +93,7 @@ def fetch_names(codes):
     try:
         import baostock as bs
         bs.login()
+        new_names = 0
         for code in missing:
             bare = code.split(".")[0]
             suffix = code.split(".")[-1].lower()
@@ -52,18 +104,23 @@ def fetch_names(codes):
                     while rs.next():
                         row = rs.get_row_data()
                         exchange = code.split(".")[-1].upper()
-                        NAME_CACHE[f"{row[0]}.{exchange}"] = row[1] if len(row) > 1 else bare
+                        full_code = f"{row[0]}.{exchange}"
+                        NAME_CACHE[full_code] = row[1] if len(row) > 1 else bare
+                        new_names += 1
                 else:
                     NAME_CACHE[code] = bare
             except:
                 NAME_CACHE[code] = bare
         bs.logout()
+        if new_names > 0:
+            _save_name_cache(NAME_CACHE)
+            logger.info(f"  新增 {new_names} 个股票名称到本地缓存")
     except Exception as e:
-        print(f"  ⚠️ baostock 不可用 ({e})，使用代码作为名称")
+        logger.warning(f"baostock 不可用 ({e})，使用缓存/代码作为名称")
         for code in missing:
             NAME_CACHE[code] = code.split(".")[0]
 
-    print(f"  获取 {len(codes)} 只股票名称")
+    logger.info(f"  获取 {len(codes)} 只股票名称")
     return NAME_CACHE
 
 
@@ -71,76 +128,13 @@ def fetch_names(codes):
 # 2. 获取行情数据 — v9 核心改进：一次 baostock login 全部提取
 # ============================================================
 def fetch_all_data_v9(codes, days=250):
-    """一次 login，逐只 query，一次 logout。回退到腾讯 API。"""
+    """腾讯 API 优先 → baostock 兜底，一次获取全部行情"""
     all_data = {}
-    stats = {'baostock': 0, 'tencent': 0, 'failed': 0}
+    stats = {'tencent': 0, 'baostock': 0, 'failed': 0}
 
-    # ---- Level 1: baostock session（一次登录全部查询）----
-    print("  [baostock] 建立连接...")
-    bs_ok = False
-    try:
-        import baostock as bs
-        lg = bs.login()
-        if lg.error_code == '0':
-            bs_ok = True
-            print("  [baostock] 连接成功，批量查询中...")
-        else:
-            print(f"  [baostock] 登录失败: {lg.error_msg}")
-    except Exception as e:
-        print(f"  [baostock] 导入/登录异常: {e}")
-
-    if bs_ok:
-        end_date = TODAY.strftime("%Y-%m-%d")
-        start_date = (TODAY - timedelta(days=days + 50)).strftime("%Y-%m-%d")
-
-        for code in codes:
-            if code in all_data:
-                continue
-            bare = code.split(".")[0]
-            suffix = code.split(".")[-1].lower()
-            bs_code = f"{suffix}.{bare}"
-
-            try:
-                rs = bs.query_history_k_data_plus(
-                    bs_code,
-                    "date,open,high,low,close,volume",
-                    start_date=start_date, end_date=end_date,
-                    frequency="d", adjustflag="2"
-                )
-                if rs.error_code != '0':
-                    continue
-
-                rows = []
-                while rs.next():
-                    rows.append(rs.get_row_data())
-
-                if len(rows) < 20:
-                    continue
-
-                df = pd.DataFrame(rows, columns=['date','Open','High','Low','Close','Volume'])
-                for col in ['Open','High','Low','Close','Volume']:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                df = df.dropna(subset=['Close'])
-                if len(df) < 20:
-                    continue
-
-                df['date'] = pd.to_datetime(df['date'])
-                df = df.set_index('date').sort_index()
-                all_data[code] = df.tail(days)
-                stats['baostock'] += 1
-            except Exception:
-                pass
-
-        try:
-            bs.logout()
-        except:
-            pass
-        print(f"  [baostock] 完成，获取 {stats['baostock']} 只")
-
-    # ---- Level 2: tencent API 兜底 ----
+    # ---- Level 1: 腾讯 API（快，无需登录）----
+    logger.info("  [腾讯] 批量获取行情...")
     for code in codes:
-        if code in all_data:
-            continue
         try:
             df = _try_tencent(code, days)
             if df is not None and len(df) >= 20:
@@ -148,14 +142,68 @@ def fetch_all_data_v9(codes, days=250):
                 stats['tencent'] += 1
         except:
             pass
+    logger.info(f"  [腾讯] 完成，获取 {stats['tencent']} 只")
+
+    # ---- Level 2: baostock 兜底 ----
+    remaining = [c for c in codes if c not in all_data]
+    if remaining:
+        logger.info(f"  [baostock] 兜底获取 {len(remaining)} 只...")
+        bs_ok = False
+        try:
+            import baostock as bs
+            lg = retry(lambda: bs.login(), max_retries=3, wait=2.0)
+            if lg.error_code == '0':
+                bs_ok = True
+            else:
+                logger.warning(f"  [baostock] 登录失败: {lg.error_msg}")
+        except Exception as e:
+            logger.warning(f"  [baostock] 不可用: {e}")
+
+        if bs_ok:
+            end_date = TODAY.strftime("%Y-%m-%d")
+            start_date = (TODAY - timedelta(days=days + 100)).strftime("%Y-%m-%d")
+            for code in remaining:
+                bare = code.split(".")[0]
+                suffix = code.split(".")[-1].lower()
+                bs_code = f"{suffix}.{bare}"
+                try:
+                    rs = bs.query_history_k_data_plus(
+                        bs_code, "date,open,high,low,close,volume",
+                        start_date=start_date, end_date=end_date,
+                        frequency="d", adjustflag="2"
+                    )
+                    if rs.error_code != '0':
+                        continue
+                    rows = []
+                    while rs.next():
+                        rows.append(rs.get_row_data())
+                    if len(rows) < 200:
+                        continue
+                    df = pd.DataFrame(rows, columns=['date','Open','High','Low','Close','Volume'])
+                    for col in ['Open','High','Low','Close','Volume']:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df = df.dropna(subset=['Close'])
+                    if len(df) < 200:
+                        continue
+                    df['date'] = pd.to_datetime(df['date'])
+                    df = df.set_index('date').sort_index()
+                    all_data[code] = df.tail(days)
+                    stats['baostock'] += 1
+                except Exception:
+                    pass
+            try:
+                bs.logout()
+            except:
+                pass
+            logger.info(f"  [baostock] 完成，兜底获取 {stats['baostock']} 只")
 
     for code in codes:
         if code not in all_data:
             stats['failed'] += 1
-            print(f"  ⚠️ {code} 所有数据源均失败")
+            logger.warning(f"  {code} 所有数据源均失败")
 
-    print(f"  获取 {len(all_data)} 只股票日线数据 "
-          f"(baostock:{stats['baostock']} tencent:{stats['tencent']} 失败:{stats['failed']})")
+    logger.info(f"  获取 {len(all_data)} 只股票日线数据 "
+          f"(腾讯:{stats['tencent']} baostock:{stats['baostock']} 失败:{stats['failed']})")
     return all_data
 
 
@@ -174,8 +222,8 @@ def _try_tencent(code, days):
             'User-Agent': 'Mozilla/5.0',
             'Referer': 'http://web.ifzq.gtimg.cn/'
         })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
+        resp = retry(lambda: urllib.request.urlopen(req, timeout=10), max_retries=2, wait=1.0)
+        data = json.loads(resp.read().decode('utf-8'))
         if data.get('code') != 0:
             return None
         day_data = data.get('data', {}).get(symbol, {}).get('qfqday')
@@ -288,7 +336,7 @@ def compute_indicators(data_map, codes, names):
             'low_52w': low_52w,
         }
 
-    print(f"  计算 {len(results)} 只股票指标 "
+    logger.info(f"  计算 {len(results)} 只股票指标 "
           f"(无数据:{skipped_no_data} 数据不足200天:{skipped_short} MA200无效:{skipped_ma200})")
     return results
 
@@ -320,7 +368,9 @@ def generate_signals(indicators):
             buy_signals.append({
                 'code': code, 'name': name, 'type': 'P1', 'label': 'MA200回调',
                 'score': round(score), 'close': close, 'deviation': deviation,
-                'desc': f"MA200({ma200:.2f})附近回调，乖离{deviation:+.1f}%，趋势分{trend}"
+                'ma200': ma200,
+                'price_action': f"建议买入价: {ma200:.2f}(MA200附近)",
+                'desc': f"MA200({ma200:.2f})附近回调，乖离{deviation:+.1f}%，趋势分{trend}，量比{vol_ratio:.1f}x"
             })
 
         # P2: 趋势加速突破（趋势分≥70，今日涨>2%，量比>1.2）
@@ -329,7 +379,9 @@ def generate_signals(indicators):
             buy_signals.append({
                 'code': code, 'name': name, 'type': 'P2', 'label': '趋势加速',
                 'score': round(score), 'close': close, 'deviation': deviation,
-                'desc': f"趋势分{trend}，日涨{chg:+.1f}%，量比{vol_ratio:.1f}x"
+                'ma200': ma200,
+                'price_action': f"建议买入价: {close:.2f}(现价追入)",
+                'desc': f"趋势分{trend}，日涨{chg:+.1f}%，量比{vol_ratio:.1f}x，强势突破中"
             })
 
         # P3: 外部冲击修复（趋势分≥40，-10%≤乖离≤-2%，量比≥1.0）
@@ -338,7 +390,9 @@ def generate_signals(indicators):
             buy_signals.append({
                 'code': code, 'name': name, 'type': 'P3', 'label': '超跌修复',
                 'score': round(score), 'close': close, 'deviation': deviation,
-                'desc': f"乖离{deviation:+.1f}%偏离MA200，趋势分{trend}，量比{vol_ratio:.1f}x"
+                'ma200': ma200,
+                'price_action': f"建议买入价: {close:.2f}(现价低吸)",
+                'desc': f"乖离{deviation:+.1f}%偏离MA200({ma200:.2f})，趋势分{trend}，量比{vol_ratio:.1f}x"
             })
 
         # P4: 突破确认（趋势分≥80，乖离2%~15%，量比>1.0）
@@ -347,7 +401,9 @@ def generate_signals(indicators):
             buy_signals.append({
                 'code': code, 'name': name, 'type': 'P4', 'label': '突破确认',
                 'score': round(score), 'close': close, 'deviation': deviation,
-                'desc': f"强势突破MA200，乖离{deviation:+.1f}%，趋势分{trend}"
+                'ma200': ma200,
+                'price_action': f"建议买入价: {close:.2f}(突破追入)",
+                'desc': f"强势突破MA200({ma200:.2f})，乖离{deviation:+.1f}%，趋势分{trend}，量比{vol_ratio:.1f}x"
             })
 
         # P5: 底部复苏（趋势分≤30 但连续两日收阳，量比>0.7）
@@ -358,7 +414,9 @@ def generate_signals(indicators):
             buy_signals.append({
                 'code': code, 'name': name, 'type': 'P5', 'label': '底部复苏',
                 'score': round(score), 'close': close, 'deviation': deviation,
-                'desc': f"趋势分仅{trend}，可能底部企稳，乖离{deviation:+.1f}%"
+                'ma200': ma200,
+                'price_action': f"建议买入价: {close:.2f}(试探建仓)",
+                'desc': f"趋势分仅{trend}，深度超跌乖离{deviation:+.1f}%，可能底部企稳，量比{vol_ratio:.1f}x"
             })
 
         # ----- 卖出信号 S1-S5 -----
@@ -366,6 +424,8 @@ def generate_signals(indicators):
         if close < ma200 and trend < 40:
             sell_signals.append({
                 'code': code, 'name': name, 'type': 'S1', 'level': 'RED', 'label': '趋势破位',
+                'close': close, 'ma200': ma200,
+                'price_action': f"建议止损价: {ma200:.2f}(MA200防守线)",
                 'desc': f"跌破MA200({ma200:.2f})，趋势分{trend}，乖离{deviation:+.1f}%"
             })
 
@@ -373,14 +433,18 @@ def generate_signals(indicators):
         if deviation > 20 and trend > 70:
             sell_signals.append({
                 'code': code, 'name': name, 'type': 'S2', 'level': 'RED', 'label': '高位过热',
-                'desc': f"乖离{deviation:+.1f}%严重偏离MA200，趋势分{trend}"
+                'close': close, 'ma200': ma200,
+                'price_action': f"建议卖出价: {close:.2f}(高位止盈)",
+                'desc': f"乖离{deviation:+.1f}%严重偏离MA200({ma200:.2f})，趋势分{trend}，风险极高"
             })
 
         # S3: 量价背离（近5日涨幅>0但量比<0.6）
         if chg > 0 and vol_ratio < 0.6:
             sell_signals.append({
                 'code': code, 'name': name, 'type': 'S3', 'level': 'YELLOW', 'label': '量价背离',
-                'desc': f"涨幅{chg:+.1f}%但量比仅{vol_ratio:.1f}x"
+                'close': close, 'ma200': ma200,
+                'price_action': f"建议减仓价: {close:.2f}(缩量上涨不可持续)",
+                'desc': f"涨幅{chg:+.1f}%但量比仅{vol_ratio:.1f}x，量价背离，上涨动力不足"
             })
 
         # S4: 高位过热分档（乖离25-100%）
@@ -397,14 +461,18 @@ def generate_signals(indicators):
             level = 'RED' if deviation >= 40 else 'YELLOW'
             sell_signals.append({
                 'code': code, 'name': name, 'type': 'S4', 'level': level, 'label': s4_label,
-                'desc': f"乖离{deviation:+.1f}%远超MA200({ma200:.2f})"
+                'close': close, 'ma200': ma200,
+                'price_action': f"建议卖出价: {close:.2f}(分批止盈)",
+                'desc': f"乖离{deviation:+.1f}%远超MA200({ma200:.2f})，{s4_label}，趋势分{trend}"
             })
 
         # S5: 趋势走弱（趋势分<30，且连续走弱）
         if trend < 30:
             sell_signals.append({
                 'code': code, 'name': name, 'type': 'S5', 'level': 'YELLOW', 'label': '趋势走弱',
-                'desc': f"趋势分仅{trend}，乖离{deviation:+.1f}%"
+                'close': close, 'ma200': ma200,
+                'price_action': f"建议减仓价: {close:.2f}(趋势衰竭)",
+                'desc': f"趋势分仅{trend}，乖离{deviation:+.1f}%，均线空头排列"
             })
 
     # 去重：每只标的取最高置信度买入信号；卖出 RED 优先（有 RED 不出 YELLOW）
@@ -426,8 +494,8 @@ def generate_signals(indicators):
 
     red_count = sum(1 for s in sell_signals if s['level'] == 'RED')
     ylw_count = sum(1 for s in sell_signals if s['level'] == 'YELLOW')
-    print(f"  买入信号: {len(buy_signals)} 条")
-    print(f"  卖出信号: {len(sell_signals)} 条 (🔴{red_count} 🟡{ylw_count})")
+    logger.info(f"  买入信号: {len(buy_signals)} 条")
+    logger.info(f"  卖出信号: {len(sell_signals)} 条 (🔴{red_count} 🟡{ylw_count})")
 
     return buy_signals, sell_signals
 
@@ -441,7 +509,7 @@ def detect_pool_changes(current_pool):
     prev = set()
     if os.path.exists(snapshot_path):
         try:
-            with open(snapshot_path, 'r') as f:
+            with open(snapshot_path, 'r', encoding='utf-8') as f:
                 prev = set(json.load(f).get('pool', []))
         except:
             pass
@@ -451,13 +519,13 @@ def detect_pool_changes(current_pool):
     removed = sorted(prev - curr)
 
     # 保存当前快照
-    with open(snapshot_path, 'w') as f:
+    with open(snapshot_path, 'w', encoding='utf-8') as f:
         json.dump({'pool': sorted(curr), 'date': TODAY.isoformat()}, f, ensure_ascii=False)
 
     if new_in or removed:
-        print(f"  池变动: 🟢{len(new_in)}只新入 🔴{len(removed)}只移出")
+        logger.info(f"  池变动: 🟢{len(new_in)}只新入 🔴{len(removed)}只移出")
     else:
-        print("  无池变动")
+        logger.info("  无池变动")
     return new_in, removed
 
 
@@ -570,7 +638,7 @@ def generate_report(codes, names, indicators, buy_signals, sell_signals, new_in,
         lines.append("")
     lines.append("")
 
-    # 第 7-8 章（简化版，完整版需更多数据）
+    # 第 7-8 章
     lines.append("## 七、风险评估")
     if indicators:
         deviations = [d['deviation'] for d in indicators.values()]
@@ -579,6 +647,8 @@ def generate_report(codes, names, indicators, buy_signals, sell_signals, new_in,
         avg_trend = np.mean(trends)
         red_count = sum(1 for s in sell_signals if s['level'] == 'RED')
         buy_count = len(buy_signals)
+        above_ma200 = sum(1 for d in indicators.values() if d['close'] > d['ma200'])
+        below_ma200 = len(indicators) - above_ma200
 
         # 市场温度
         if avg_trend >= 60 and avg_dev >= 10:
@@ -588,9 +658,25 @@ def generate_report(codes, names, indicators, buy_signals, sell_signals, new_in,
         else:
             temp = "🌤 温和"
 
-        lines.append(f"- **市场温度**: {temp}")
+        # 尝试对比昨日报告
+        temp_trend = ""
+        yesterday_report = os.path.join(CLOUD_DIR, f"report_{(TODAY - timedelta(days=1)).isoformat()}.md")
+        if os.path.exists(yesterday_report):
+            try:
+                prev_text = open(yesterday_report, 'r', encoding='utf-8').read()
+                import re
+                prev_temp_match = re.search(r'市场温度\*\*: (.+)', prev_text)
+                if prev_temp_match:
+                    prev_temp = prev_temp_match.group(1).strip()
+                    if prev_temp != temp:
+                        temp_trend = f"（昨日: {prev_temp}）"
+            except:
+                pass
+
+        lines.append(f"- **市场温度**: {temp} {temp_trend}")
         lines.append(f"- 平均趋势分: {avg_trend:.0f}")
         lines.append(f"- 平均乖离: {avg_dev:+.1f}%")
+        lines.append(f"- MA200上方: {above_ma200}只 | 下方: {below_ma200}只")
         lines.append(f"- RED警报数: {red_count}")
         ratio = f"{buy_count}买 / {red_count}🔴卖"
         if red_count > buy_count:
@@ -602,12 +688,15 @@ def generate_report(codes, names, indicators, buy_signals, sell_signals, new_in,
     lines.append("")
 
     lines.append("## 八、明日关注")
-    # MA200 附近标的
+    # MA200 附近标的（含MA200价格和距离）
     ma200_near = [(c, d) for c, d in indicators.items() if -3 <= d['deviation'] <= 3]
     if ma200_near:
         lines.append("### MA200 附近（潜在买点区域）")
+        lines.append(f"| 名称 | 代码 | 现价 | MA200 | 距离 | 乖离 |")
+        lines.append(f"|------|------|------|-------|------|------|")
         for c, d in sorted(ma200_near, key=lambda x: abs(x[1]['deviation'])):
-            lines.append(f"- **{d['name']}** ({c}) 乖离 {d['deviation']:+.1f}%")
+            distance = d['close'] - d['ma200']
+            lines.append(f"| {d['name']} | {c} | {d['close']:.2f} | {d['ma200']:.2f} | {distance:+.2f} | {d['deviation']:+.1f}% |")
     else:
         lines.append("无MA200附近标的")
 
@@ -615,8 +704,10 @@ def generate_report(codes, names, indicators, buy_signals, sell_signals, new_in,
     oversold = [(c, d) for c, d in indicators.items() if d['deviation'] <= -10]
     if oversold:
         lines.append("### 超跌标的（关注修复机会）")
+        lines.append(f"| 名称 | 代码 | 现价 | MA200 | 乖离 | 趋势分 |")
+        lines.append(f"|------|------|------|-------|------|--------|")
         for c, d in sorted(oversold, key=lambda x: x[1]['deviation']):
-            lines.append(f"- **{d['name']}** ({c}) 乖离 {d['deviation']:+.1f}%")
+            lines.append(f"| {d['name']} | {c} | {d['close']:.2f} | {d['ma200']:.2f} | {d['deviation']:+.1f}% | {d['trend_score']} |")
     lines.append("")
 
     # 第九章：数据质量说明
@@ -631,7 +722,7 @@ def generate_report(codes, names, indicators, buy_signals, sell_signals, new_in,
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write(report)
 
-    print(f"  完整报告: {report_path} ({len(report)} 字符)")
+    logger.info(f"  完整报告: {report_path} ({len(report)} 字符)")
     return report
 
 
@@ -639,60 +730,87 @@ def generate_report(codes, names, indicators, buy_signals, sell_signals, new_in,
 # 7. 方糖推送
 # ============================================================
 def push_wx(buy_signals, sell_signals, new_in, removed, report_path):
-    """推送摘要到微信（方糖），完整报告见文件"""
-    # 标题
+    """推送摘要到微信（方糖）— 包含名称/代码/建议价格/原因"""
+    if not FANGTANG_KEY:
+        logger.warning("  FANGTANG_KEY 未设置，跳过推送")
+        return
+
     buy_n = len(buy_signals)
     sell_n = len(sell_signals)
-    red_n = sum(1 for s in sell_signals if s['level'] == 'RED')
-    title = f"NQP {TODAY.strftime('%m-%d')} 🔥买{buy_n} ⚠️卖{sell_n}"
-
-    lines = [f"🔥 NQP V3.3 {TODAY.isoformat()}"]
-
-    # 池变动
-    if new_in:
-        lines.append(f"\n🟢 新纳入: {', '.join(n for n in new_in)}")
-    if removed:
-        lines.append(f"🔴 移出: {', '.join(r for r in removed)}")
-
-    # 买入
-    if buy_signals:
-        lines.append(f"\n--- 🛒 买入({buy_n}只) ---")
-        for s in buy_signals[:5]:
-            lines.append(f"  {s['label']} {s['name']}({s['code']}) {s['score']}%")
-        if buy_n > 5:
-            lines.append(f"  ... 共{buy_n}只，完整报告见文件")
-
-    # 卖出 RED
     reds = [s for s in sell_signals if s['level'] == 'RED']
     ylws = [s for s in sell_signals if s['level'] == 'YELLOW']
-    if reds:
-        lines.append(f"\n--- 🔴 卖出警报({len(reds)}只) ---")
-        for s in reds[:5]:
-            lines.append(f"  {s['label']} {s['name']}({s['code']})")
-        if len(reds) > 5:
-            lines.append(f"  ... 共{len(reds)}只")
+    red_n = len(reds)
+    SHOW_MAX = 8  # 每种信号最多显示条数
 
-    # YELLOW 数量
+    title = f"NQP {TODAY.strftime('%m-%d')}  🔥买{buy_n}  ⚠️卖{sell_n}"
+    lines = [f"NQP V3.3  {TODAY.isoformat()}  🔥买{buy_n}  ⚠️卖{sell_n}(🔴{red_n}🟡{len(ylws)})"]
+
+    # ── 池变动 ──
+    if new_in or removed:
+        lines.append("\n━━━ 🔄 池变动 ━━━")
+        if new_in:
+            lines.append(f"🟢 新纳入({len(new_in)}只):")
+            for c in new_in[:10]:
+                lines.append(f"   +{c}")
+            if len(new_in) > 10:
+                lines.append(f"   ... 共{len(new_in)}只")
+        if removed:
+            lines.append(f"🔴 移出({len(removed)}只):")
+            for c in removed[:10]:
+                lines.append(f"   -{c}")
+            if len(removed) > 10:
+                lines.append(f"   ... 共{len(removed)}只")
+
+    # ── 买入信号 ──
+    if buy_signals:
+        lines.append(f"\n━━━ 🛒 买入信号 {buy_n}只 ━━━")
+        for i, s in enumerate(buy_signals[:SHOW_MAX]):
+            lines.append(f"\n{i+1}. {s['name']}({s['code']})")
+            lines.append(f"   {s['type']}{s['label']} | 置信{s['score']}%")
+            lines.append(f"   现价{s['close']:.2f} | {s['price_action']}")
+            lines.append(f"   原因: {s['desc']}")
+        if buy_n > SHOW_MAX:
+            lines.append(f"\n... 共{buy_n}只买入信号，详见完整报告")
+
+    # ── 卖出 RED ──
+    if reds:
+        lines.append(f"\n━━━ 🔴 卖出警报 {red_n}只 ━━━")
+        for i, s in enumerate(reds[:SHOW_MAX]):
+            lines.append(f"\n{i+1}. {s['name']}({s['code']})")
+            lines.append(f"   {s['type']}{s['label']}")
+            lines.append(f"   现价{s['close']:.2f} | MA200: {s['ma200']:.2f}")
+            lines.append(f"   {s['price_action']}")
+            lines.append(f"   原因: {s['desc']}")
+        if red_n > SHOW_MAX:
+            lines.append(f"\n... 共{red_n}只🔴警报，详见完整报告")
+
+    # ── 卖出 YELLOW ──
     if ylws:
-        lines.append(f"\n🟡 黄色预警: {len(ylws)}只 (完整报告见文件)")
+        lines.append(f"\n━━━ 🟡 黄色预警 {len(ylws)}只 ━━━")
+        for i, s in enumerate(ylws[:5]):
+            lines.append(f"\n{i+1}. {s['name']}({s['code']})")
+            lines.append(f"   {s['type']}{s['label']}")
+            lines.append(f"   现价{s['close']:.2f} | {s['price_action']}")
+            lines.append(f"   原因: {s['desc']}")
+        if len(ylws) > 5:
+            lines.append(f"\n... 共{len(ylws)}只🟡预警，详见完整报告")
 
     if not buy_signals and not sell_signals:
         lines.append("\n今日无信号触发")
 
-    lines.append(f"\n📄 完整报告: cloud/report_{TODAY.isoformat()}.md")
+    lines.append(f"\n━━━━━━━━━━━━━━━━━━")
+    lines.append(f"📄 完整报告: cloud/report_{TODAY.isoformat()}.md")
     lines.append("⚠️ 仅供研究参考，不构成投资建议")
 
     content = "\n".join(lines)
 
     if DRY_RUN:
-        print(f"\n  🔍 [DRY RUN] 不推送")
-        print(f"  标题: {title}")
-        print(f"  内容: {len(content)} 字符")
-        print(f"  内容预览:")
-        for line in content.split("\n")[:10]:
-            print(f"  {line}")
-        if len(content.split("\n")) > 10:
-            print(f"  ... 共{len(content.splitlines())}行")
+        logger.info(f"  [DRY RUN] 标题: {title}")
+        logger.info(f"  [DRY RUN] 内容: {len(content)} 字符, {len(content.splitlines())}行")
+        for line in content.split("\n")[:20]:
+            logger.info(f"  {line}")
+        if len(content.splitlines()) > 20:
+            logger.info(f"  ... 共{len(content.splitlines())}行")
     else:
         try:
             url = f"https://sctapi.ftqq.com/{FANGTANG_KEY}.send"
@@ -705,71 +823,89 @@ def push_wx(buy_signals, sell_signals, new_in, removed, report_path):
             with urllib.request.urlopen(req, timeout=15) as resp:
                 result = json.loads(resp.read().decode('utf-8'))
             if result.get('code') == 0:
-                print("  ✅ 微信推送成功")
+                logger.info("  ✅ 微信推送成功")
             else:
-                print(f"  ⚠️ 推送可能失败: {result}")
+                logger.warning(f"推送可能失败: {result}")
         except Exception as e:
-            print(f"  ❌ 推送失败: {e}")
+            logger.error(f"推送失败: {e}")
 
 
 # ============================================================
 # 8. 主流程
 # ============================================================
 def main():
-    print(f"NQP V3.3 每日趋势追踪报告 — v9")
-    print(f"日期: {TODAY.isoformat()} {'🔍 DRY RUN' if DRY_RUN else '📡 正式推送'}")
-    print("=" * 60)
+    logger.info(f"NQP V3.3 每日趋势追踪报告 — v9")
+    logger.info(f"日期: {TODAY.isoformat()} {'🔍 DRY RUN' if DRY_RUN else '📡 正式推送'}")
+    logger.info("=" * 60)
 
-    # 加载池
+    # 加载池（三级回退：pool_result.json → .nqp_pool.json → DEFAULT_POOL）
     pool_path = os.path.join(SCRIPT_DIR, "pool_result.json")
+    nqp_pool_path = os.path.join(SCRIPT_DIR, ".nqp_pool.json")
     codes = DEFAULT_POOL
+    pool_source = "默认池"
+
     if os.path.exists(pool_path):
         try:
-            with open(pool_path, 'r') as f:
+            with open(pool_path, 'r', encoding='utf-8') as f:
                 pool_data = json.load(f)
-            if 'codes' in pool_data and pool_data['codes']:
+            pool_codes = pool_data.get('codes') or pool_data.get('stocks')
+            if pool_codes:
                 codes = [c if '.' in c else f"{c}.SH" if c.startswith('6') else f"{c}.SZ"
-                         for c in pool_data['codes']]
-                print(f"  使用池文件: {len(codes)} 只")
-        except:
-            print(f"  使用默认池: {len(codes)} 只")
-    else:
-        print(f"  使用默认池: {len(codes)} 只")
+                         for c in pool_codes]
+                pool_source = f"轮换池(pool_result.json)"
+        except Exception as e:
+            logger.warning(f"轮换池读取失败({e})，尝试回退池...")
+
+    # 回退：.nqp_pool.json（8赛道手动维护池）
+    if pool_source == "默认池" and os.path.exists(nqp_pool_path):
+        try:
+            with open(nqp_pool_path, 'r', encoding='utf-8') as f:
+                nqp_data = json.load(f)
+            nqp_codes = []
+            for sector, sector_codes in nqp_data.items():
+                nqp_codes.extend(sector_codes)
+            if nqp_codes:
+                codes = list(dict.fromkeys(nqp_codes))  # 去重保序
+                pool_source = f"备用池(.nqp_pool.json)"
+        except Exception as e:
+            logger.warning(f"备用池读取失败({e})")
+
+    logger.info(f"  使用{pool_source}: {len(codes)} 只")
 
     if not codes:
-        print("❌ 无股票池，退出")
+        logger.info("❌ 无股票池，退出")
         return
 
     # [1/5] 名称
-    print("\n[1/5] 获取股票名称...")
+    logger.info("\n[1/5] 获取股票名称...")
     names = fetch_names(codes)
 
     # [2/5] 池变动
-    print("\n[2/5] 检测池变动...")
+    logger.info("\n[2/5] 检测池变动...")
     new_in, removed = detect_pool_changes(codes)
 
     # [3/5] 行情
-    print("\n[3/5] 获取行情数据...")
+    logger.info("\n[3/5] 获取行情数据...")
     data_map = fetch_all_data_v9(codes)
 
     # [4/5] 指标 + 信号
-    print("\n[4/5] 计算指标 + 生成信号...")
+    logger.info("\n[4/5] 计算指标 + 生成信号...")
     indicators = compute_indicators(data_map, codes, names)
     if not indicators:
-        print("  ❌ 无有效指标数据，退出")
+        logger.info("  ❌ 无有效指标数据，退出")
         return
 
     buy_signals, sell_signals = generate_signals(indicators)
 
     # [5/5] 报告 + 推送
-    print("\n[5/5] 生成报告 + 推送...")
+    logger.info("\n[5/5] 生成报告 + 推送...")
     report_path = os.path.join(CLOUD_DIR, f"report_{TODAY.isoformat()}.md")
     generate_report(codes, names, indicators, buy_signals, sell_signals, new_in, removed, report_path)
     push_wx(buy_signals, sell_signals, new_in, removed, report_path)
 
-    print("\n" + "=" * 60)
-    print("完成 ✅")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("完成 ✅")
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":

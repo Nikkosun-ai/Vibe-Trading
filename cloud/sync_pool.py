@@ -1,3 +1,6 @@
+# DEPRECATED — 服务于 agent/daily_pipeline.py，不属于 cloud 推送链路
+# cloud 推送链路使用 daily_push.py + pool_rotator.py，不依赖此文件
+# 保留仅供 agent 端流水线参考
 import json, re, sys  
 from pathlib import Path  
   

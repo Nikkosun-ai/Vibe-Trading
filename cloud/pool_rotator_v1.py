@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """
+# DEPRECATED — 已被 pool_rotator.py (v6) 替代
+# 原因: v1 使用腾讯财经+akshare，赛道只有6个；v6 改用东财push2+baostock四级降级，8赛道
+# 保留仅供历史参考，所有 workflow 均使用 pool_rotator.py
+#
 NQP V3.3 月度股票池自动轮换引擎
 ===================================
 每月第一个交易日运行，自动扫描A股市场，按新质生产力赛道

@@ -2,8 +2,8 @@ name: NQP Daily Push
 
 on:
   schedule:
-    # 北京时间 20:30 (UTC 12:30) 收盘后
-    - cron: '30 12 * * 1-5'
+    # 北京时间 14:30 (UTC 06:30) 盘中
+    - cron: '30 6 * * 1-5'
   workflow_dispatch:
 
 jobs:

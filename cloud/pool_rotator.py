@@ -24,6 +24,14 @@ import argparse
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 # ── 项目根 ──────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -194,9 +202,9 @@ def fetch_board_baostock() -> dict[str, list[str]]:
         bs.logout()
 
     if rows:
-        print(f"  [baostock] 原始行数: {len(rows)}, 样本前3行:")
+        logger.info(f"  [baostock] 原始行数: {len(rows)}, 样本前3行:")
         for r in rows[:3]:
-            print(f"    {r}")
+            logger.info(f"    {r}")
 
     boards: dict[str, list[str]] = {}
     for row in rows:
@@ -211,9 +219,9 @@ def fetch_board_baostock() -> dict[str, list[str]]:
             continue
         boards.setdefault(ind, []).append(code)
 
-    print(f"  [baostock] 行业数: {len(boards)}, 总股票数: {sum(len(v) for v in boards.values())}")
+    logger.info(f"  [baostock] 行业数: {len(boards)}, 总股票数: {sum(len(v) for v in boards.values())}")
     for ind_name in sorted(boards.keys())[:8]:
-        print(f"    {ind_name}: {boards[ind_name][:3]}... ({len(boards[ind_name])}只)")
+        logger.info(f"    {ind_name}: {boards[ind_name][:3]}... ({len(boards[ind_name])}只)")
 
     return boards
 
@@ -301,12 +309,12 @@ def match_tracks_baostock(boards: dict[str, list[str]]) -> dict[str, set[str]]:
     for t in TRACK_CONCEPTS:
         inds = matched_industries.get(t, [])
         if inds:
-            print(f"  [赛道] {t}: {len(inds)} 个行业 → {len(tracks[t])} 只成分股")
+            logger.info(f"  [赛道] {t}: {len(inds)} 个行业 → {len(tracks[t])} 只成分股")
         else:
-            print(f"  [赛道] {t}: 0 个行业 → 0 只成分股")
+            logger.info(f"  [赛道] {t}: 0 个行业 → 0 只成分股")
 
     if unmatched:
-        print(f"  [未匹配] {len(unmatched)} 个行业: {unmatched[:15]}...")
+        logger.info(f"  [未匹配] {len(unmatched)} 个行业: {unmatched[:15]}...")
 
     return tracks
 
@@ -340,7 +348,7 @@ def _fetch_fundamentals_eastmoney(codes: list[str]) -> dict[str, dict]:
                         "amount": float(item.get("f15") or 0),
                     }
         except Exception as e:
-            print(f"    [东财] 批次 {i} 失败: {e}")
+            logger.info(f"    [东财] 批次 {i} 失败: {e}")
     return results
 
 
@@ -396,14 +404,14 @@ def basic_filter(
     if not all_codes:
         return {t: set() for t in track_stocks}
 
-    print(f"  [基本面] 尝试东财 API ({len(all_codes)} 只)...")
+    logger.info(f"  [基本面] 尝试东财 API ({len(all_codes)} 只)...")
     fund = _fetch_fundamentals_eastmoney(all_codes)
 
     if not fund:
-        print(f"  [基本面] 尝试 baostock ({len(all_codes)} 只)...")
+        logger.info(f"  [基本面] 尝试 baostock ({len(all_codes)} 只)...")
         fund = _fetch_fundamentals_baostock(all_codes, target_date)
 
-    print(f"  [基本面] 总共获取 {len(fund)} 只")
+    logger.info(f"  [基本面] 总共获取 {len(fund)} 只")
 
     filtered: dict[str, set[str]] = {t: set() for t in track_stocks}
     for track in track_stocks:
@@ -424,7 +432,7 @@ def basic_filter(
                 continue
             filtered[track].add(code)
 
-        print(f"  [扫描] {track}: {len(filtered[track])} 只通过基础过滤")
+        logger.info(f"  [扫描] {track}: {len(filtered[track])} 只通过基础过滤")
 
     return filtered
 
@@ -442,7 +450,7 @@ def ma200_filter(
     if not all_codes:
         return {t: set() for t in track_stocks}
 
-    print(f"  [MA200] 处理 {len(all_codes)} 只标的...")
+    logger.info(f"  [MA200] 处理 {len(all_codes)} 只标的...")
     import baostock as bs
     bs.login()
     # 需要足够长的历史算MA200
@@ -472,12 +480,12 @@ def ma200_filter(
     finally:
         bs.logout()
 
-    print(f"  [MA200] K线获取: {len(passed)} 只成功, {len(failed)} 只失败")
+    logger.info(f"  [MA200] K线获取: {len(passed)} 只成功, {len(failed)} 只失败")
 
     result: dict[str, set[str]] = {}
     for track, codes in track_stocks.items():
         result[track] = codes & passed
-        print(f"  [MA200] {track}: {len(result[track])} 只通过（共{len(codes)}只）")
+        logger.info(f"  [MA200] {track}: {len(result[track])} 只通过（共{len(codes)}只）")
 
     return result
 
@@ -546,7 +554,7 @@ def score_stocks(
         )
         result[track] = ranked
         top5_str = ", ".join(f"{c}({s:.1f})" for c, s in ranked[:5])
-        print(f"  [Top5] {track}: {top5_str}" if top5_str else f"  [Top5] {track}: (无)")
+        logger.info(f"  [Top5] {track}: {top5_str}" if top5_str else f"  [Top5] {track}: (无)")
     return result
 
 
@@ -554,88 +562,88 @@ def run(dry_run: bool = False, target_date: Optional[str] = None):
     if target_date is None:
         target_date = date.today().isoformat()
 
-    print("=" * 60)
-    print(f"NQP V3.3 月度池轮换 v6 — {target_date}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info(f"NQP V3.3 月度池轮换 v6 — {target_date}")
+    logger.info("=" * 60)
 
     # ──── Step 1: 获取概念板块 ────
-    print("\n[1/7] 获取概念板块（多源降级）...")
+    logger.info("\n[1/7] 获取概念板块（多源降级）...")
     boards: dict[str, list[str]] = {}
     source = None
 
     # 1. akshare
-    print("  [概念] 尝试 akshare...")
+    logger.info("  [概念] 尝试 akshare...")
     try:
         boards = _retry(fetch_board_akshare)
         source = "akshare"
-        print(f"  [概念] akshare 成功, {len(boards)} 个板块")
+        logger.info(f"  [概念] akshare 成功, {len(boards)} 个板块")
     except Exception as e:
-        print(f"  [概念] akshare 失败: {e}")
+        logger.info(f"  [概念] akshare 失败: {e}")
 
     # 2. eastmoney
     if not boards:
-        print("  [概念] 尝试 eastmoney...")
+        logger.info("  [概念] 尝试 eastmoney...")
         try:
             boards = _retry(fetch_board_eastmoney)
             source = "eastmoney"
-            print(f"  [概念] eastmoney 成功, {len(boards)} 个板块")
+            logger.info(f"  [概念] eastmoney 成功, {len(boards)} 个板块")
         except Exception as e:
-            print(f"  [概念] eastmoney 失败: {e}")
+            logger.info(f"  [概念] eastmoney 失败: {e}")
 
     # 3. baostock
     if not boards:
-        print("  [概念] 尝试 baostock...")
+        logger.info("  [概念] 尝试 baostock...")
         try:
             boards = _retry(fetch_board_baostock)
             source = "baostock"
         except Exception as e:
-            print(f"  [概念] baostock 失败: {e}")
+            logger.info(f"  [概念] baostock 失败: {e}")
 
     # 4. 缓存
     if not boards:
-        print("  [概念] 使用本地缓存...")
+        logger.info("  [概念] 使用本地缓存...")
         boards = load_board_cache()
         source = "cache"
         if boards:
-            print(f"  [概念] 缓存加载成功, 板块/行业数: {len(boards)}")
+            logger.info(f"  [概念] 缓存加载成功, 板块/行业数: {len(boards)}")
 
     if not boards:
-        print("  [概念] ❌ 所有数据源均失败，退出")
+        logger.info("  [概念] ❌ 所有数据源均失败，退出")
         sys.exit(1)
 
-    print(f"  [概念] 成功, 数据源: {source}, 板块/行业数: {len(boards)}")
+    logger.info(f"  [概念] 成功, 数据源: {source}, 板块/行业数: {len(boards)}")
 
     # ──── Step 2: 赛道匹配 ────
-    print("\n[2/7] 赛道匹配（数据源: {})...".format(source))
+    logger.info("\n[2/7] 赛道匹配（数据源: {})...".format(source))
     if source == "baostock" or source == "cache":
         # 检查是否是 baostock 行业格式 (dict of industry→codes)
         # v6 修复: 兼容 list 格式的 boards（缓存可能为 list）
         if isinstance(boards, dict) and boards:
             tracks = match_tracks_baostock(boards)
         else:
-            print("  [赛道] boards 非 dict, 回退概念匹配")
+            logger.info("  [赛道] boards 非 dict, 回退概念匹配")
             tracks = match_tracks_concept(boards if isinstance(boards, dict) else {})
     else:
         tracks = match_tracks_concept(boards)
 
     total = len(set().union(*tracks.values()))
-    print(f"  [赛道] 总计: {total} 只成分股（去重）")
+    logger.info(f"  [赛道] 总计: {total} 只成分股（去重）")
 
     # ──── Step 3: 成分股扫描 + 基础过滤 ────
-    print("\n[3/7] 成分股扫描...")
+    logger.info("\n[3/7] 成分股扫描...")
     filtered = basic_filter(tracks, target_date)
 
     # ──── Step 4: MA200 技术过滤 ────
-    print("\n[4/7] MA200 技术过滤...")
+    logger.info("\n[4/7] MA200 技术过滤...")
     ma200_passed = ma200_filter(filtered, target_date)
 
     # ──── Step 5-6: 评分 + Top5 ────
-    print("\n[5/7] 赛道分配 & 评分...")
-    print("\n[6/7] Top5 选择...")
+    logger.info("\n[5/7] 赛道分配 & 评分...")
+    logger.info("\n[6/7] Top5 选择...")
     ranked = score_stocks(ma200_passed, target_date)
 
     # ──── Step 7: 输出 ────
-    print("\n[7/7] 输出结果...")
+    logger.info("\n[7/7] 输出结果...")
     top5_flat: list[str] = []
     for t in TRACK_CONCEPTS:
         top5_flat.extend(c for c, _ in ranked.get(t, [])[:5])
@@ -657,7 +665,7 @@ def run(dry_run: bool = False, target_date: Optional[str] = None):
         "generated_at": datetime.now().isoformat(),
         "version": "v3.3",
         "total_stocks": len(top5_flat),
-        "stocks": top5_flat,
+        "codes": top5_flat,
         "changes": {
             "added": added,
             "removed": removed,
@@ -666,22 +674,22 @@ def run(dry_run: bool = False, target_date: Optional[str] = None):
         }
     }
 
-    print(f"  总池: {len(top5_flat)} 只")
-    print(f"  新增: {len(added)} 只 {added if added else ''}")
-    print(f"  移除: {len(removed)} 只 {removed if removed else ''}")
-    print()
+    logger.info(f"  总池: {len(top5_flat)} 只")
+    logger.info(f"  新增: {len(added)} 只 {added if added else ''}")
+    logger.info(f"  移除: {len(removed)} 只 {removed if removed else ''}")
+    logger.info("")
 
     if dry_run:
-        print("🔍 [DRY RUN] 预览模式，不写入文件")
+        logger.info("🔍 [DRY RUN] 预览模式，不写入文件")
     else:
         RESULT_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(RESULT_FILE, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
-        print("✅ 已写入 pool_result.json")
+        logger.info("✅ 已写入 pool_result.json")
         # 同时更新缓存
         save_board_cache(boards)
 
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    logger.info(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
