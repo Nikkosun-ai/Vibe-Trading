@@ -492,6 +492,28 @@ def generate_signals(indicators):
             sell_dedup[key] = s  # RED 优先
     sell_signals = sorted(sell_dedup.values(), key=lambda x: (0 if x['level']=='RED' else 1, x['type']))
 
+    # 交叉去重：有卖出信号的标的从买入列表移除
+    # RED 卖出完全覆盖买入/ YELLOW S5(趋势走弱)覆盖P5底部复苏/ 其他YELLOW保留买入但加警示
+    sell_codes = {s['code'] for s in sell_signals}
+    red_codes = {s['code'] for s in sell_signals if s['level'] == 'RED'}
+    s5_codes = {s['code'] for s in sell_signals if s['type'] == 'S5'}
+    removed_buy = []
+    buy_final = []
+    for s in buy_signals:
+        code = s['code']
+        if code in red_codes:
+            # RED 卖出 → 去掉买入信号
+            removed_buy.append(code)
+        elif s['type'] == 'P5' and code in s5_codes:
+            # P5底部复苏 vs S5趋势走弱矛盾 → 去掉P5
+            removed_buy.append(code)
+        else:
+            buy_final.append(s)
+    buy_signals = buy_final
+
+    if removed_buy:
+        logger.info(f"  交叉去重: 移除 {len(removed_buy)} 只标的的买入信号 (被卖出信号覆盖)")
+
     red_count = sum(1 for s in sell_signals if s['level'] == 'RED')
     ylw_count = sum(1 for s in sell_signals if s['level'] == 'YELLOW')
     logger.info(f"  买入信号: {len(buy_signals)} 条")
