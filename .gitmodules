@@ -1,0 +1,3 @@
+[submodule "agent/nqp-clone"]
+	path = agent/nqp-clone
+	url = https://github.com/Nikkosun-ai/nqp-signal-pipeline.git

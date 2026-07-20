@@ -12,12 +12,9 @@ jobs:
   rotate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout nqp-signal-pipeline
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          repository: Nikkosun-ai/nqp-signal-pipeline
-          path: nqp-pipeline
-          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -28,11 +25,11 @@ jobs:
         run: pip install pandas requests
 
       - name: Run pool rotator
-        working-directory: nqp-pipeline
+        working-directory: agent/nqp-clone
         run: python cloud/pool_rotator.py
 
       - name: Commit & push pool
-        working-directory: nqp-pipeline
+        working-directory: agent/nqp-clone
         run: |
           git config user.name "NQP Pool Bot"
           git config user.email "bot@nqp-pool.local"
