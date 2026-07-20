@@ -12,7 +12,12 @@ jobs:
   rotate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout nqp-signal-pipeline
+        uses: actions/checkout@v4
+        with:
+          repository: Nikkosun-ai/nqp-signal-pipeline
+          path: nqp-pipeline
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -20,25 +25,25 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install akshare pandas requests
+        run: pip install pandas requests
 
       - name: Run pool rotator
-        working-directory: agent/nqp-clone
+        working-directory: nqp-pipeline
         run: python cloud/pool_rotator.py
 
       - name: Commit & push pool
-        working-directory: agent/nqp-clone
+        working-directory: nqp-pipeline
         run: |
           git config user.name "NQP Pool Bot"
           git config user.email "bot@nqp-pool.local"
-          git add cloud/pool_result.json cloud/pool.json
+          git add cloud/pool_result.json
           if git diff --cached --quiet; then
             echo "池无变化，跳过提交"
           else
             git commit -m "chore: 每周池轮换 $(date +%Y-%m-%d)"
             git pull --rebase origin main
             git push origin main
-            echo "✅ 池已更新并推送"
+            echo "池已更新并推送"
           fi
 
       - name: Notify via ServerChan
