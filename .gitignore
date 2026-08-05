@@ -87,6 +87,9 @@ AGENTS.md
 
 .DS_Store
 
+# Zhao picks daily reports (generated)
+daily_reports/
+
 # Alpha Zoo wiki artifacts (generated, not source)
 wiki/alpha-library/manifest.json
 wiki/alpha-library/content/
