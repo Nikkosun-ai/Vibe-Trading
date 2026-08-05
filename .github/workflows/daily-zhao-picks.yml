@@ -1,0 +1,35 @@
+name: Daily Zhao Picks
+
+on:
+  schedule:
+    # 每个交易日 17:37 北京时间 (09:37 UTC)
+    - cron: "37 9 * * 1-5"
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  screen-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Run Zhao screener
+        env:
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+        run: python daily_zhao_picks.py
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: zhao-picks-report
+          path: daily_reports/
+          retention-days: 30
