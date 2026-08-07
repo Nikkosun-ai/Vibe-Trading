@@ -1,4 +1,4 @@
-name: Daily Zhao Picks
+name: Vibe Daily Combined Report (Zhao + NQP V6)
 
 on:
   schedule:
@@ -21,15 +21,15 @@ jobs:
       - name: Install deps
         run: pip install requests
 
-      - name: Run Zhao screener
+      - name: Run combined report (Zhao + NQP V6)
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
-        run: python daily_zhao_picks.py
+        run: python combined_daily_report.py
 
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: zhao-picks-report
+          name: combined-daily-report
           path: daily_reports/
           retention-days: 30
