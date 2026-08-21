@@ -130,7 +130,9 @@ def zhao_screening(target_date):
 
     first_boards.sort(key=lambda x: -x["score"])
     top = first_boards[:3]
-    return {"picks": top, "total": len(today_data), "first_count": len(first_boards)}
+    top_net_buy = sorted(candidates, key=lambda x: -x["net_buy"])[:5]
+    return {"picks": top, "total": len(today_data), "first_count": len(first_boards),
+            "top_net_buy": top_net_buy}
 
 # =============================================================
 # PART 2: NQP V6 STRATEGY (趋势追踪)
@@ -274,6 +276,19 @@ def generate_report(zhao_result, nqp_result, target_date, tomorrow):
     picks = zhao_result.get("picks", [])
     if not picks:
         lines.append("⚠️ 今日无符合条件首板标的，建议观望。")
+        top_lhb = zhao_result.get("top_net_buy", [])
+        if top_lhb:
+            lines.append(f"")
+            lines.append(f"**今日龙虎榜净买入榜（情绪参考）:**")
+            lines.append(f"")
+            lines.append(f"| 代码 | 名称 | 涨幅 | 净买入 | 换手 |")
+            lines.append(f"|------|------|------|--------|------|")
+            for t in top_lhb[:5]:
+                nb_yi = t['net_buy'] / 10000
+                nb_str = f"{nb_yi:.2f}亿" if nb_yi >= 1 else f"{t['net_buy']:.0f}万"
+                lines.append(f"| {t['code']} | {t['name']} | {t['change']:+.1f}% | {nb_str} | {t['turnover']:.1f}% |")
+            lines.append(f"")
+            lines.append(f"> 注: 以上个股不满足全部首板条件，仅作情绪观察，不建议操作")
     else:
         for i, c in enumerate(picks):
             emoji = ["🥇","🥈","🥉"][i]
@@ -408,7 +423,7 @@ if __name__ == "__main__":
 
     # Push
     picks = zhao.get("picks", [])
-    pick_names = "/".join([p["name"] for p in picks[:3]]) if picks else "无信号"
+    pick_names = "/".join([p["name"] for p in picks[:3]]) if picks else "观望"
     regime = nqp.get("regime", "?")
     regime_emoji = {"bull":"🟢","weak":"🟡","bear":"🔴"}.get(regime,"❓")
     title = f"Vibe日报 {today} | {regime_emoji}{regime} | 短线:{pick_names}"
@@ -475,6 +490,25 @@ if __name__ == "__main__":
             push_lines.append(f"> 低开 < ¥{round(c['close']*0.99,2)} (-1%) → **放弃**")
             push_lines.append(f"> 止损：¥{stop_at} (-5%)　|　目标：¥{target_at} (+5%)")
             push_lines.append("")
+    else:
+        push_lines.append("---")
+        push_lines.append("## 📈 明日短线（赵老哥首板）")
+        push_lines.append("")
+        push_lines.append("⚠️ 今日无符合首板条件标的（需：涨停+高换手+净买入为正+近5日首板），**建议观望**")
+        push_lines.append("")
+        top_lhb = zhao.get("top_net_buy", [])
+        if top_lhb:
+            push_lines.append("**今日龙虎榜净买入榜（情绪参考）：**")
+            push_lines.append("")
+            push_lines.append("| 代码 | 名称 | 涨幅 | 净买入 | 换手 |")
+            push_lines.append("|------|------|------|--------|------|")
+            for t in top_lhb[:5]:
+                nb_yi = t['net_buy'] / 10000
+                nb_str = f"{nb_yi:.2f}亿" if nb_yi >= 1 else f"{t['net_buy']:.0f}万"
+                push_lines.append(f"| {t['code']} | {t['name']} | {t['change']:+.1f}% | {nb_str} | {t['turnover']:.1f}% |")
+            push_lines.append("")
+            push_lines.append("> 注：以上个股不满足全部首板条件，仅作情绪观察，**不建议操作**")
+            push_lines.append("")
 
     if nqp.get("stocks"):
         buy_stocks = [s for s in nqp["stocks"] if s.get("buy_signals")]
@@ -497,9 +531,28 @@ if __name__ == "__main__":
                 target_p = f"¥{s['price']*1.10:.0f}" if s['price'] else "—"
                 push_lines.append(f"| {s['code']} | {s['name']} | ¥{s['price']:.2f} | {dev:+.1f}% | {sigs} | {buy_p} | {stop_p} | {target_p} |")
             push_lines.append("")
+        else:
+            # 无买入信号：展示池子概览（卖出预警优先，其余按乖离最负）
+            watch = sorted(sell_stocks, key=lambda x: x.get('deviation', 0))[:3]
+            rest = [s for s in nqp["stocks"] if not s.get('sell_signals') and not s.get('buy_signals')]
+            rest = sorted(rest, key=lambda x: x.get('deviation', 0))[:5 - len(watch)]
+            watch.extend(rest)
+            if watch:
+                push_lines.append("**交易池观察（无买入信号，仅供跟踪）：**")
+                push_lines.append("")
+                push_lines.append("| 代码 | 名称 | 现价 | 乖离 | 信号 | 止损 | 目标 |")
+                push_lines.append("|------|------|------|------|------|------|------|")
+                for s in watch[:5]:
+                    dev = s.get('deviation', 0)
+                    ma = s.get('ma200', 0)
+                    sells = ','.join(s.get('sell_signals', [])) or "—"
+                    stop_p = f"¥{ma*0.95:.0f}" if ma else "—"
+                    target_p = f"¥{s['price']*1.10:.0f}" if s['price'] else "—"
+                    push_lines.append(f"| {s['code']} | {s['name']} | ¥{s['price']:.2f} | {dev:+.1f}% | {sells} | {stop_p} | {target_p} |")
+                push_lines.append("")
 
         if sell_stocks:
-            sc = ', '.join(f"{s['code']} {s['name']}" for s in sell_stocks[:5])
+            sc = ', '.join(f"{s['code']} {s['name']}(¥{s['price']:.2f})" for s in sell_stocks[:5])
             push_lines.append(f"⚠️ **卖出预警:** {sc}")
             push_lines.append("")
 
