@@ -129,7 +129,7 @@ def zhao_screening(target_date):
         c["score"] = round(s, 1)
 
     first_boards.sort(key=lambda x: -x["score"])
-    top = first_boards[:3]
+    top = first_boards[:10]  # 返回前10，由主流程按市场分级过滤
     top_net_buy = sorted(candidates, key=lambda x: -x["net_buy"])[:5]
     return {"picks": top, "total": len(today_data), "first_count": len(first_boards),
             "top_net_buy": top_net_buy}
@@ -290,6 +290,16 @@ def generate_report(zhao_result, nqp_result, target_date, tomorrow):
             lines.append(f"")
             lines.append(f"> 注: 以上个股不满足全部首板条件，仅作情绪观察，不建议操作")
     else:
+        if zhao_result.get("filter_note"):
+            lines.append(f"")
+            lines.append(f"> ⚠️ {zhao_result['filter_note']}")
+        # 按市场分级定仓位
+        if regime == "bear":
+            pos3, pos1 = "5%试探仓", "3%迷你仓"
+        elif regime == "weak":
+            pos3, pos1 = "10%仓位", "5%仓位"
+        else:
+            pos3, pos1 = "20%仓位", "10%仓位"
         for i, c in enumerate(picks):
             emoji = ["🥇","🥈","🥉"][i]
             lines.append(f"### {emoji} #{i+1} {c['code']} {c['name']} — 评分 {c['score']:.0f}")
@@ -306,8 +316,8 @@ def generate_report(zhao_result, nqp_result, target_date, tomorrow):
             lines.append(f"**明日操作:**")
             lines.append(f"| 条件 | 操作 |")
             lines.append(f"|------|------|")
-            lines.append(f"| 高开≥{c['close']*1.03:.2f} | 买入20%仓位 |")
-            lines.append(f"| 高开≥{c['close']*1.01:.2f} | 买入10%仓位 |")
+            lines.append(f"| 高开≥{c['close']*1.03:.2f} | {pos3} |")
+            lines.append(f"| 高开≥{c['close']*1.01:.2f} | {pos1} |")
             lines.append(f"| 低开<{c['close']*0.99:.2f} | 放弃 |")
             lines.append(f"| 止损 | ¥{c['close']*0.95:.2f} |")
             lines.append(f"")
@@ -413,6 +423,21 @@ if __name__ == "__main__":
     print("Running NQP V6 analysis...")
     nqp = nqp_v6_analysis()
 
+    # 市场分级过滤赵老哥短线（8月回测: bear下打板胜率仅32.7%/收益-2.48%）
+    regime = nqp.get("regime", "?")
+    picks_before = zhao.get("picks", [])
+    if regime == "bear":
+        zhao["picks"] = [p for p in picks_before if p["score"] >= 33][:1]
+        zhao["filter_note"] = "熊市环境: 8月回测打板胜率32.7%，仅保留最高分标的(≥33)做5%试探仓，其余观望"
+    elif regime == "weak":
+        zhao["picks"] = [p for p in picks_before if p["score"] >= 28][:3]
+        zhao["filter_note"] = "弱势环境: 评分≥28才入选，仓位减半"
+    else:
+        zhao["picks"] = picks_before[:3]
+        zhao["filter_note"] = ""
+    if len(picks_before) > len(zhao["picks"]):
+        print(f"[Zhao] {regime}过滤: {len(picks_before)} -> {len(zhao['picks'])} 只")
+
     # Generate report
     report = generate_report(zhao, nqp, today, tomorrow)
 
@@ -455,6 +480,9 @@ if __name__ == "__main__":
         push_lines.append("---")
         push_lines.append("## 📈 明日短线（赵老哥首板）")
         push_lines.append("")
+        if zhao.get("filter_note"):
+            push_lines.append(f"> ⚠️ {zhao['filter_note']}")
+            push_lines.append("")
         for i, c in enumerate(picks[:3]):
             buy_1pct = round(c['close'] * 1.01, 2)
             buy_3pct = round(c['close'] * 1.03, 2)
@@ -468,6 +496,14 @@ if __name__ == "__main__":
             sell_str = f"{c['sell']/10000:.2f}亿" if c['sell'] >= 10000 else f"{c['sell']:.0f}万"
             cmt = commentary(c)
             emoji = ['🥇','🥈','🥉'][i]
+
+            # 按市场分级定仓位
+            if regime == "bear":
+                pos3, pos1, pos0 = "5%试探仓", "3%迷你仓", "**不买**"
+            elif regime == "weak":
+                pos3, pos1, pos0 = "10%仓位", "5%仓位", "2%试探"
+            else:
+                pos3, pos1, pos0 = "直接20%仓位", "买入10%仓位，观察15分钟", "5%试探仓"
 
             push_lines.append(f"### {emoji} #{i+1} {c['name']} {c['code']} — 评分 {c['score']:.0f}/40" + (f"（{cmt}）" if cmt else ""))
             push_lines.append("")
@@ -484,9 +520,9 @@ if __name__ == "__main__":
             push_lines.append("")
             push_lines.append("**明日操作计划：**")
             push_lines.append("")
-            push_lines.append(f"> 高开 ≥ ¥{buy_3pct} (+3%) → 直接20%仓位")
-            push_lines.append(f"> 高开 ≥ ¥{buy_1pct} (+1%) → 买入10%仓位，观察15分钟")
-            push_lines.append(f"> 平开/微高 → 5%试探仓")
+            push_lines.append(f"> 高开 ≥ ¥{buy_3pct} (+3%) → {pos3}")
+            push_lines.append(f"> 高开 ≥ ¥{buy_1pct} (+1%) → {pos1}")
+            push_lines.append(f"> 平开/微高 → {pos0}")
             push_lines.append(f"> 低开 < ¥{round(c['close']*0.99,2)} (-1%) → **放弃**")
             push_lines.append(f"> 止损：¥{stop_at} (-5%)　|　目标：¥{target_at} (+5%)")
             push_lines.append("")
