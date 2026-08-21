@@ -417,7 +417,6 @@ if __name__ == "__main__":
             content_lines.append(f"> 收盘{t['close']:.2f} 涨{t['change_pct']:+.1f}% 净买{t['net_buy_wan']:.0f}万 换手{t['turnover_pct']:.1f}%")
             content_lines.append(f"> 高开≥{t['close']*1.01:.2f}买入10% | 止损{t['close']*0.95:.2f}")
             content_lines.append("")
-        content_lines.append("[查看完整报告](daily_reports/)")
         push_serverchan(SERVERCHAN_SENDKEY, title, "\n".join(content_lines))
     else:
         print("[Push] Skipped: SERVERCHAN_SENDKEY not set. Visit https://sct.ftqq.com/ to get one.")
