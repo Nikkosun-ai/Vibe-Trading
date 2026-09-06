@@ -1,15 +1,15 @@
-name: Vibe Daily Review (Daban + NQP V6)
+name: Daban Intraday Push (打板盘中推送)
 
 on:
   schedule:
-    # 每个交易日 17:37 北京时间 (09:37 UTC)
-    - cron: "37 9 * * 1-5"
+    # 每个交易日 14:32 北京时间 (06:32 UTC), 提前吸收 Actions 排队延迟
+    - cron: "32 6 * * 1-5"
   workflow_dispatch:  # 支持手动触发
 
 jobs:
   screen-and-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v6
@@ -21,15 +21,15 @@ jobs:
       - name: Install deps
         run: pip install requests
 
-      - name: Run combined report (Daban + NQP V6)
+      - name: Run daban intraday screen
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
-        run: python combined_daily_report.py
+        run: python daban_daily.py
 
-      - name: Upload report
+      - name: Upload signal
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: combined-daily-report
+          name: daban-intraday
           path: daily_reports/
           retention-days: 30

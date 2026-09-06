@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Combined Daily Report: Zhao Laoge + NQP V6
+Combined Daily Report: Daban (打板复盘) + NQP V6
 Runs after market close, generates unified report + WeChat push
+打板部分: 收盘口径复盘 + 明日开盘卖出提醒 (盘中执行见 daban_daily.py 14:32推送)
 """
-import sys, io, os, json, time, random, requests, re, urllib.request
+import sys, io, os, time, random, requests, urllib.request
 from datetime import datetime, date, timedelta
-from collections import defaultdict
 from pathlib import Path
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+from daban_core import fetch_zt_pool, screen_candidates, is_trading_day
 
 # ── Config ────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent
@@ -19,7 +21,6 @@ REPORTS_DIR.mkdir(exist_ok=True)
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 SERVERCHAN_KEY = os.environ.get("SERVERCHAN_SENDKEY", "")
 SERVERCHAN_URL = "https://sctapi.ftqq.com/{}.send"
-DT_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 
 # NQP V6 Stock Pool (from daily_push.py)
 NQP_POOL = [
@@ -43,96 +44,21 @@ def _get(url, timeout=15, **kw):
         _last_call[0] = time.time()
 
 # =============================================================
-# PART 1: ZHAO LAOGE STRATEGY (首板回封)
+# PART 1: DABAN REVIEW (打板复盘)
 # =============================================================
-def zhao_screening(target_date):
-    """Run Zhao Laoge first-board screening. Returns summary dict."""
-    # Fetch today's dragon tiger
-    params = {
-        "reportName": "RPT_DAILYBILLBOARD_DETAILSNEW", "columns": "ALL",
-        "filter": f"(TRADE_DATE>='{target_date}')(TRADE_DATE<='{target_date}')",
-        "pageNumber": "1", "pageSize": "500",
-        "sortColumns": "BILLBOARD_NET_AMT", "sortTypes": "-1",
-        "source": "WEB", "client": "WEB",
-    }
-    try:
-        r = _get(DT_URL, params=params, timeout=20, headers={"Referer": "https://data.eastmoney.com/"})
-        today_data = (r.json().get("result") or {}).get("data") or []
-    except Exception as e:
-        return {"error": str(e), "picks": [], "total": 0}
-
-    if not today_data:
-        return {"error": "no_data", "picks": [], "total": 0}
-
-    # Past 5 days for first-board filter
-    past_start = (datetime.strptime(target_date, "%Y-%m-%d") - timedelta(days=10)).strftime("%Y-%m-%d")
-    past_end = (datetime.strptime(target_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-    try:
-        r2 = _get(DT_URL, params={
-            "reportName": "RPT_DAILYBILLBOARD_DETAILSNEW", "columns": "ALL",
-            "filter": f"(TRADE_DATE>='{past_start}')(TRADE_DATE<='{past_end}')",
-            "pageNumber": "1", "pageSize": "500",
-            "sortColumns": "TRADE_DATE", "sortTypes": "-1",
-            "source": "WEB", "client": "WEB",
-        }, timeout=20, headers={"Referer": "https://data.eastmoney.com/"})
-        past_data = (r2.json().get("result") or {}).get("data") or []
-    except Exception:
-        past_data = []
-    recent_codes = {r.get("SECURITY_CODE","") for r in past_data}
-
-    # Filter
-    candidates, seen = [], set()
-    for row in today_data:
-        code = row.get("SECURITY_CODE","")
-        name = row.get("SECURITY_NAME_ABBR","")
-        if code in seen: continue
-        seen.add(code)
-        if "ST" in name.upper(): continue
-        chg = float(row.get("CHANGE_RATE") or 0)
-        if chg < 9: continue
-        turnover = float(row.get("TURNOVERRATE") or 0)
-        if turnover < 3: continue
-        net_buy = (row.get("BILLBOARD_NET_AMT") or 0) / 10000
-        if net_buy <= 0: continue
-        close = float(row.get("CLOSE_PRICE") or 0)
-        if close <= 0: continue
-        reason = row.get("EXPLANATION","")
-        is_first = code not in recent_codes
-        is_multi = any(kw in reason for kw in ["连续","三日","累计"])
-
-        candidates.append({
-            "code": code, "name": name, "close": close, "change": chg,
-            "turnover": turnover, "net_buy": net_buy,
-            "buy": (row.get("BILLBOARD_BUY_AMT") or 0)/10000,
-            "sell": (row.get("BILLBOARD_SELL_AMT") or 0)/10000,
-            "reason": reason, "is_first": is_first, "is_multi": is_multi,
-        })
-
-    first_boards = [c for c in candidates if c["is_first"] and not c["is_multi"]]
-    # Score
-    for c in first_boards:
-        s = 0
-        nb = c["net_buy"]
-        if nb >= 10000: s += 20
-        elif nb >= 5000: s += 15
-        elif nb >= 2000: s += 10
-        elif nb >= 1000: s += 5
-        else: s += 2
-        to = c["turnover"]
-        if 10 <= to <= 30: s += 10
-        elif 5 <= to <= 40: s += 5
-        if c["sell"] > 0:
-            ratio = c["buy"] / c["sell"]
-            if ratio >= 3: s += 8
-            elif ratio >= 2: s += 5
-            elif ratio >= 1.5: s += 3
-        c["score"] = round(s, 1)
-
-    first_boards.sort(key=lambda x: -x["score"])
-    top = first_boards[:10]  # 返回前10，由主流程按市场分级过滤
-    top_net_buy = sorted(candidates, key=lambda x: -x["net_buy"])[:5]
-    return {"picks": top, "total": len(today_data), "first_count": len(first_boards),
-            "top_net_buy": top_net_buy}
+def daban_review(target_date):
+    """收盘后复盘: 重拉当日涨停池 + 收盘口径筛选. Returns summary dict."""
+    if not is_trading_day(target_date):
+        return {"error": "holiday", "day_zt": 0, "tier": "非交易日",
+                "note": "非交易日, 跳过复盘", "cands": []}
+    rows = fetch_zt_pool(target_date)
+    if not rows:
+        # 对比昨日盘中信号文件, 判断是否非交易日
+        return {"error": "no_data", "day_zt": 0, "tier": "无数据",
+                "note": "涨停池为空(非交易日或数据源异常)", "cands": []}
+    res = screen_candidates(rows, target_date)
+    return {"day_zt": res["day_zt"], "tier": res["tier"], "pos": res["pos"],
+            "note": res["note"], "cands": res["cands"], "error": None}
 
 # =============================================================
 # PART 2: NQP V6 STRATEGY (趋势追踪)
@@ -246,82 +172,53 @@ def nqp_v6_analysis():
 # =============================================================
 # REPORT GENERATION
 # =============================================================
-def generate_report(zhao_result, nqp_result, target_date, tomorrow):
+def generate_report(daban_result, nqp_result, target_date, tomorrow):
     """Generate combined markdown report."""
     lines = []
     lines.append(f"# Vibe-Trading 每日策略报告 — {target_date}")
     lines.append(f"")
     lines.append(f"> 生成时间: {datetime.now().strftime('%H:%M')} | 目标交易日: **{tomorrow}**")
-    lines.append(f"> 策略组合: 赵老哥首板回封（短线T+1）+ NQP V6趋势追踪（中长线）")
+    lines.append(f"> 策略组合: 打板短线（首板T+1）+ NQP V6趋势追踪（中长线）")
     lines.append(f"")
 
     # ── Section 1: Market Overview ──
     regime = nqp_result.get("regime", "unknown")
     regime_label = {"bull": "🟢 牛市", "weak": "🟡 弱势/震荡", "bear": "🔴 熊市"}.get(regime, "❓未知")
+    dz = daban_result.get("day_zt", 0)
+    daban_env = "✅ 可操作" if dz >= 80 else ("⚠️ 空仓观望" if dz > 0 else "❌ 无数据")
     lines.append("## 一、市场状态")
     lines.append(f"")
     lines.append(f"| 维度 | 状态 |")
     lines.append(f"|------|------|")
     lines.append(f"| NQP V6 市场分级 | **{regime_label}** |")
-    lines.append(f"| 赵老哥短线环境 | {'✅ 可操作' if zhao_result.get('picks') else '❌ 无信号'} |")
-    lines.append(f"| 今日龙虎榜 | {zhao_result.get('total', 0)} 条记录 |")
+    lines.append(f"| 今日涨停家数 | **{dz} 家** |")
+    lines.append(f"| 打板短线环境 | {daban_env} |")
     lines.append(f"")
 
-    # ── Section 2: Zhao Picks ──
-    lines.append("## 二、赵老哥短线打板（明日操作）")
+    # ── Section 2: Daban Review ──
+    lines.append("## 二、打板复盘（今日）")
     lines.append(f"")
-    lines.append(f"> 策略: 新题材龙头 + 近5日首板 + 高换手 + 高净买 + 回封确认")
+    lines.append(f"> 情绪: 涨停 **{dz} 家** → {daban_result.get('tier','?')} → "
+                 f"单票 {daban_result.get('pos',0)*100:.0f}% 仓")
+    lines.append(f"> {daban_result.get('note','')}")
     lines.append(f"")
 
-    picks = zhao_result.get("picks", [])
-    if not picks:
-        lines.append("⚠️ 今日无符合条件首板标的，建议观望。")
-        top_lhb = zhao_result.get("top_net_buy", [])
-        if top_lhb:
-            lines.append(f"")
-            lines.append(f"**今日龙虎榜净买入榜（情绪参考）:**")
-            lines.append(f"")
-            lines.append(f"| 代码 | 名称 | 涨幅 | 净买入 | 换手 |")
-            lines.append(f"|------|------|------|--------|------|")
-            for t in top_lhb[:5]:
-                nb_yi = t['net_buy'] / 10000
-                nb_str = f"{nb_yi:.2f}亿" if nb_yi >= 1 else f"{t['net_buy']:.0f}万"
-                lines.append(f"| {t['code']} | {t['name']} | {t['change']:+.1f}% | {nb_str} | {t['turnover']:.1f}% |")
-            lines.append(f"")
-            lines.append(f"> 注: 以上个股不满足全部首板条件，仅作情绪观察，不建议操作")
+    cands = daban_result.get("cands", [])
+    if not cands:
+        lines.append("⚠️ 今日无打板信号，空仓观望。明日条件不变：涨停 ≥80 家才出手。")
+        lines.append(f"")
     else:
-        if zhao_result.get("filter_note"):
-            lines.append(f"")
-            lines.append(f"> ⚠️ {zhao_result['filter_note']}")
-        # 按市场分级定仓位
-        if regime == "bear":
-            pos3, pos1 = "5%试探仓", "3%迷你仓"
-        elif regime == "weak":
-            pos3, pos1 = "10%仓位", "5%仓位"
-        else:
-            pos3, pos1 = "20%仓位", "10%仓位"
-        for i, c in enumerate(picks):
-            emoji = ["🥇","🥈","🥉"][i]
-            lines.append(f"### {emoji} #{i+1} {c['code']} {c['name']} — 评分 {c['score']:.0f}")
-            lines.append(f"")
-            lines.append(f"| 指标 | 数值 |")
-            lines.append(f"|------|------|")
-            lines.append(f"| 收盘 | ¥{c['close']:.2f} |")
-            lines.append(f"| 涨幅 | **{c['change']:+.1f}%** |")
-            lines.append(f"| 换手 | {c['turnover']:.1f}% |")
-            lines.append(f"| 净买 | **{c['net_buy']:.0f}万** |")
-            if c['sell'] > 0:
-                lines.append(f"| 买/卖比 | {c['buy']/c['sell']:.1f}:1 |")
-            lines.append(f"")
-            lines.append(f"**明日操作:**")
-            lines.append(f"| 条件 | 操作 |")
-            lines.append(f"|------|------|")
-            lines.append(f"| 高开≥{c['close']*1.03:.2f} | {pos3} |")
-            lines.append(f"| 高开≥{c['close']*1.01:.2f} | {pos1} |")
-            lines.append(f"| 低开<{c['close']*0.99:.2f} | 放弃 |")
-            lines.append(f"| 止损 | ¥{c['close']*0.95:.2f} |")
-            lines.append(f"")
-        lines.append(f"*完整排名: {zhao_result.get('first_count', 0)} 只首板候选*")
+        lines.append("**今日收盘口径候选（若尾盘已按盘中推送买入，明日开盘无条件卖出）：**")
+        lines.append(f"")
+        lines.append(f"| # | 代码 | 名称 | 涨停价 | 量比 | 题材(联动) | 流通市值 |")
+        lines.append(f"|---|------|------|--------|------|-----------|----------|")
+        for i, c in enumerate(cands, 1):
+            ltsz = f"{c['ltsz_yi']:.0f}亿" if c["ltsz_yi"] else "—"
+            lines.append(f"| {i} | {c['code']} | {c['name']} | {c['price']:.2f} | "
+                         f"{c['vol_ratio']:.2f} | {c['tag1']}({c['tag1_cnt']}家) | {ltsz} |")
+        lines.append(f"")
+        lines.append(f"⏰ **明日开盘无条件卖出**，不恋战、不补仓、不持有过夜。")
+        lines.append(f"")
     lines.append(f"")
 
     # ── Section 3: NQP V6 Pool ──
@@ -368,10 +265,10 @@ def generate_report(zhao_result, nqp_result, target_date, tomorrow):
     # ── Section 4: Execution Rules ──
     lines.append("## 四、执行铁律")
     lines.append(f"")
-    lines.append(f"**赵老哥短线:**")
-    lines.append(f"- 只在高开≥1%时买入，低开直接跳过")
-    lines.append(f"- 最多持有3只，单只≤20%仓位")
-    lines.append(f"- T+1 竞价弱立即止损，不持股过周末")
+    lines.append(f"**打板短线（盘中14:32推送执行）：**")
+    lines.append(f"- 情绪分档: ≥100家 25%仓 / 80-99家 12.5% / <80家 空仓 / 150+家 降半仓")
+    lines.append(f"- 只打首板非一字 + 量比<1.5；≥100家时加 题材≥3家 × 流通市值<80亿")
+    lines.append(f"- 次日开盘无条件卖，最多4只，不补仓")
     lines.append(f"")
     lines.append(f"**NQP V6 趋势:**")
     lines.append(f"- 严格遵守市场分级: {regime_label} → {'仅P4/P5' if regime == 'weak' else '全信号' if regime == 'bull' else '空仓等待'}")
@@ -381,7 +278,7 @@ def generate_report(zhao_result, nqp_result, target_date, tomorrow):
 
     # Footer
     lines.append("---")
-    lines.append(f"*自动生成 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 赵老哥首板回封 + NQP V6趋势追踪*")
+    lines.append(f"*自动生成 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 打板短线 + NQP V6趋势追踪*")
     lines.append(f"*⚠️ AI算法筛选，不构成投资建议*")
 
     return "\n".join(lines)
@@ -415,31 +312,19 @@ if __name__ == "__main__":
     tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     print(f"Combined Daily Report: {today} -> {tomorrow}")
 
-    # Part 1: Zhao
-    print("Running Zhao Laoge screening...")
-    zhao = zhao_screening(today)
+    # Part 1: Daban review
+    print("Running daban review...")
+    daban = daban_review(today)
+    if daban.get("error") == "holiday":
+        print("非交易日 → 跳过复盘推送")
+        sys.exit(0)
 
     # Part 2: NQP V6
     print("Running NQP V6 analysis...")
     nqp = nqp_v6_analysis()
 
-    # 市场分级过滤赵老哥短线（8月回测: bear下打板胜率仅32.7%/收益-2.48%）
-    regime = nqp.get("regime", "?")
-    picks_before = zhao.get("picks", [])
-    if regime == "bear":
-        zhao["picks"] = [p for p in picks_before if p["score"] >= 33][:1]
-        zhao["filter_note"] = "熊市环境: 8月回测打板胜率32.7%，仅保留最高分标的(≥33)做5%试探仓，其余观望"
-    elif regime == "weak":
-        zhao["picks"] = [p for p in picks_before if p["score"] >= 28][:3]
-        zhao["filter_note"] = "弱势环境: 评分≥28才入选，仓位减半"
-    else:
-        zhao["picks"] = picks_before[:3]
-        zhao["filter_note"] = ""
-    if len(picks_before) > len(zhao["picks"]):
-        print(f"[Zhao] {regime}过滤: {len(picks_before)} -> {len(zhao['picks'])} 只")
-
     # Generate report
-    report = generate_report(zhao, nqp, today, tomorrow)
+    report = generate_report(daban, nqp, today, tomorrow)
 
     # Save
     report_path = REPORTS_DIR / f"combined_{today}.md"
@@ -447,104 +332,43 @@ if __name__ == "__main__":
     print(f"Report: {report_path}")
 
     # Push
-    picks = zhao.get("picks", [])
-    pick_names = "/".join([p["name"] for p in picks[:3]]) if picks else "观望"
     regime = nqp.get("regime", "?")
     regime_emoji = {"bull":"🟢","weak":"🟡","bear":"🔴"}.get(regime,"❓")
-    title = f"Vibe日报 {today} | {regime_emoji}{regime} | 短线:{pick_names}"
-
-    # Generate commentary for each pick
-    def commentary(c):
-        notes = []
-        nb = c['net_buy']
-        if nb >= 10000: notes.append("断层领先")
-        elif nb >= 5000: notes.append("主力强势")
-        if c.get('sell', 0) > 0:
-            ratio = c['buy'] / c['sell']
-            if ratio >= 3: notes.append("买盘碾压")
-            elif ratio >= 2: notes.append("买压显著")
-        to = c['turnover']
-        if 20 <= to <= 30: notes.append("最优换手区间")
-        elif 10 <= to <= 35: notes.append("换手健康")
-        chg = c['change']
-        if chg >= 19.9: notes.append("20cm涨停")
-        elif chg >= 10: notes.append("10cm涨停")
-        return "，".join(notes) if notes else ""
+    dz = daban.get("day_zt", 0)
+    cands = daban.get("cands", [])
+    sell_names = "/".join([c["name"] for c in cands[:4]]) if cands else "空仓"
+    title = f"Vibe复盘 {today} | {regime_emoji}{regime} | 涨停{dz}家 | 卖出:{sell_names}"
 
     # Push content
-    push_lines = [f"## Vibe日报 {today}", ""]
-    push_lines.append(f"**市场状态** {regime_emoji} {regime} | 龙虎榜 {zhao.get('total',0)}条")
+    push_lines = [f"## Vibe复盘 {today}", ""]
+    push_lines.append(f"**市场状态** {regime_emoji} {regime} | 今日涨停 **{dz} 家**")
     push_lines.append("")
 
-    if picks:
-        push_lines.append("---")
-        push_lines.append("## 📈 明日短线（赵老哥首板）")
+    push_lines.append("---")
+    push_lines.append("## 📈 打板复盘")
+    push_lines.append("")
+    if daban.get("error"):
+        push_lines.append(f"⚠️ {daban.get('note','数据异常')}")
         push_lines.append("")
-        if zhao.get("filter_note"):
-            push_lines.append(f"> ⚠️ {zhao['filter_note']}")
-            push_lines.append("")
-        for i, c in enumerate(picks[:3]):
-            buy_1pct = round(c['close'] * 1.01, 2)
-            buy_3pct = round(c['close'] * 1.03, 2)
-            stop_at = round(c['close'] * 0.95, 2)
-            target_at = round(c['close'] * 1.05, 2)
-            bs_ratio_num = c['buy'] / c['sell'] if c.get('sell',0) > 0 else 0
-            bs_ratio = f"{bs_ratio_num:.0f}:1" if bs_ratio_num > 0 else "—"
-            net_buy_yi = c['net_buy'] / 10000
-            net_buy_str = f"{net_buy_yi:.2f}亿" if net_buy_yi >= 1 else f"{c['net_buy']:.0f}万"
-            buy_str = f"{c['buy']/10000:.2f}亿" if c['buy'] >= 10000 else f"{c['buy']:.0f}万"
-            sell_str = f"{c['sell']/10000:.2f}亿" if c['sell'] >= 10000 else f"{c['sell']:.0f}万"
-            cmt = commentary(c)
-            emoji = ['🥇','🥈','🥉'][i]
-
-            # 按市场分级定仓位
-            if regime == "bear":
-                pos3, pos1, pos0 = "5%试探仓", "3%迷你仓", "**不买**"
-            elif regime == "weak":
-                pos3, pos1, pos0 = "10%仓位", "5%仓位", "2%试探"
-            else:
-                pos3, pos1, pos0 = "直接20%仓位", "买入10%仓位，观察15分钟", "5%试探仓"
-
-            push_lines.append(f"### {emoji} #{i+1} {c['name']} {c['code']} — 评分 {c['score']:.0f}/40" + (f"（{cmt}）" if cmt else ""))
-            push_lines.append("")
-            push_lines.append("| 指标 | 数值 |")
-            push_lines.append("|------|------|")
-            push_lines.append(f"| 今日收盘 | ¥{c['close']:.2f} |")
-            chg_note = ""
-            if c['change'] >= 19.9: chg_note = "（20cm涨停）"
-            elif c['change'] >= 9.9: chg_note = "（涨停）"
-            push_lines.append(f"| 涨幅 | **{c['change']:+.1f}%**{chg_note} |")
-            push_lines.append(f"| 换手率 | {c['turnover']:.1f}% |")
-            push_lines.append(f"| 净买入 | **{net_buy_str}** |")
-            push_lines.append(f"| 买/卖比 | {buy_str} / {sell_str} ≈ {bs_ratio} |")
-            push_lines.append("")
-            push_lines.append("**明日操作计划：**")
-            push_lines.append("")
-            push_lines.append(f"> 高开 ≥ ¥{buy_3pct} (+3%) → {pos3}")
-            push_lines.append(f"> 高开 ≥ ¥{buy_1pct} (+1%) → {pos1}")
-            push_lines.append(f"> 平开/微高 → {pos0}")
-            push_lines.append(f"> 低开 < ¥{round(c['close']*0.99,2)} (-1%) → **放弃**")
-            push_lines.append(f"> 止损：¥{stop_at} (-5%)　|　目标：¥{target_at} (+5%)")
-            push_lines.append("")
+    elif not cands:
+        push_lines.append(f"**涨停 {dz} 家 → {daban.get('tier')} → 空仓观望**")
+        push_lines.append(f"> {daban.get('note','')}")
+        push_lines.append("")
     else:
-        push_lines.append("---")
-        push_lines.append("## 📈 明日短线（赵老哥首板）")
+        push_lines.append(f"**涨停 {dz} 家 → {daban.get('tier')} → 单票 {daban.get('pos',0)*100:.0f}% 仓**")
+        push_lines.append(f"> {daban.get('note','')}")
         push_lines.append("")
-        push_lines.append("⚠️ 今日无符合首板条件标的（需：涨停+高换手+净买入为正+近5日首板），**建议观望**")
+        push_lines.append("**今日收盘口径候选（已按盘中推送买入的，明日开盘无条件卖出）：**")
         push_lines.append("")
-        top_lhb = zhao.get("top_net_buy", [])
-        if top_lhb:
-            push_lines.append("**今日龙虎榜净买入榜（情绪参考）：**")
-            push_lines.append("")
-            push_lines.append("| 代码 | 名称 | 涨幅 | 净买入 | 换手 |")
-            push_lines.append("|------|------|------|--------|------|")
-            for t in top_lhb[:5]:
-                nb_yi = t['net_buy'] / 10000
-                nb_str = f"{nb_yi:.2f}亿" if nb_yi >= 1 else f"{t['net_buy']:.0f}万"
-                push_lines.append(f"| {t['code']} | {t['name']} | {t['change']:+.1f}% | {nb_str} | {t['turnover']:.1f}% |")
-            push_lines.append("")
-            push_lines.append("> 注：以上个股不满足全部首板条件，仅作情绪观察，**不建议操作**")
-            push_lines.append("")
+        push_lines.append("| 代码 | 名称 | 涨停价 | 量比 | 题材(联动) | 市值 |")
+        push_lines.append("|------|------|--------|------|-----------|------|")
+        for c in cands:
+            ltsz = f"{c['ltsz_yi']:.0f}亿" if c["ltsz_yi"] else "—"
+            push_lines.append(f"| {c['code']} | {c['name']} | {c['price']:.2f} | "
+                              f"{c['vol_ratio']:.2f} | {c['tag1']}({c['tag1_cnt']}家) | {ltsz} |")
+        push_lines.append("")
+        push_lines.append("⏰ **明日开盘无条件卖出**，不恋战不补仓。")
+        push_lines.append("")
 
     if nqp.get("stocks"):
         buy_stocks = [s for s in nqp["stocks"] if s.get("buy_signals")]
@@ -593,7 +417,7 @@ if __name__ == "__main__":
             push_lines.append("")
 
     push_lines.append("---")
-    push_lines.append(f"*{today} 自动生成 | 赵老哥首板回封 + NQP V6趋势追踪*")
+    push_lines.append(f"*{today} 自动生成 | 打板短线 + NQP V6趋势追踪*")
     push_wechat(title, "\n".join(push_lines))
 
     print("Done.")
