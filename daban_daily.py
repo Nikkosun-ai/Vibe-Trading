@@ -13,7 +13,7 @@ from pathlib import Path
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from daban_core import fetch_zt_pool, screen_candidates, is_trading_day
+from daban_core import fetch_zt_pool, screen_candidates_intraday, is_trading_day
 
 REPORTS_DIR = Path(__file__).parent / "daily_reports"
 REPORTS_DIR.mkdir(exist_ok=True)
@@ -72,6 +72,7 @@ def build_push(res: dict, today: str) -> tuple:
               "3. **14:50 二次确认**：仍封死涨停 + 量比仍<1.5 才留单；炸板/放量撤单",
               "4. 次日开盘**无条件卖出**（集合竞价或开盘30秒内）",
               "5. 情绪峰值150+家时执行半仓（今日提示为准）",
+              "6. 涨停家数为推送时点值，收盘可能±10家，下单前以实况为准",
               "",
               f"*生成 {datetime.now().strftime('%H:%M')} | 数据: 同花顺+新浪 | 不构成投资建议*"]
     title = f"打板 {today} | 涨停{n}家{tier} | {len(cands)}只候选"
@@ -83,7 +84,7 @@ def main():
     print(f"打板盘中筛选: {today} {datetime.now().strftime('%H:%M:%S')}")
 
     if not is_trading_day(today):
-        print("非交易日(或当日bar未生成) → 跳过推送")
+        print("非交易日或数据不可用 → 跳过推送")
         return
 
     rows = fetch_zt_pool(today)
@@ -92,7 +93,8 @@ def main():
         print("无数据 → 非交易日或API缺日, 跳过推送")
         return
 
-    res = screen_candidates(rows, today)
+    # 盘中口径: 实时字段走腾讯行情, 新浪K线仅取历史(首板+20日均量)
+    res = screen_candidates_intraday(rows, today)
     print(f"涨停 {res['day_zt']} 家 | {res['tier']} | 单票{res['pos']*100:.0f}% | 候选 {len(res['cands'])} 只")
     for c in res["cands"]:
         print(f"  {c['code']} {c['name']:<8} 价{c['price']:.2f} 量比{c['vol_ratio']} "
@@ -100,6 +102,7 @@ def main():
 
     # 落盘
     out = {"date": today, "generated": datetime.now().isoformat(timespec="seconds"),
+           "intraday": True,
            "day_zt": res["day_zt"], "tier": res["tier"], "pos": res["pos"],
            "note": res["note"], "cands": res["cands"]}
     p = REPORTS_DIR / f"daban_signal_{today}.json"
